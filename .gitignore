@@ -1,0 +1,10 @@
+.venv1/
+__pycache__/
+.idea/
+.vscode/
+browser_profile/
+question_captures/
+web_collected_questions/
+last_capture_debug.png
+number_region_debug.png
+*.pyc
