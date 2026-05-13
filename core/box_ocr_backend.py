@@ -258,9 +258,9 @@ def _get_box_backend_candidates(
     for_options: bool = False,
 ) -> list[type[BaseBoxOcrBackend]]:
     ordered = (
-        [PaddleBoxBackend, RapidOpenVinoBoxBackend, RapidOnnxBoxBackend, WindowsBoxBackend]
+        [RapidOpenVinoBoxBackend, RapidOnnxBoxBackend, WindowsBoxBackend, PaddleBoxBackend]
         if for_options
-        else [RapidOpenVinoBoxBackend, PaddleBoxBackend, RapidOnnxBoxBackend, WindowsBoxBackend]
+        else [RapidOpenVinoBoxBackend, RapidOnnxBoxBackend, WindowsBoxBackend, PaddleBoxBackend]
     )
     if backend_name and backend_name != "auto":
         for backend_cls in ordered:

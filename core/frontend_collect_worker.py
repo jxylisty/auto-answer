@@ -268,6 +268,7 @@ class FrontendCollectWorker(QObject):
                     "click_y": y,
                     "ocr_text": text,
                     "image_path": image_path,
+                    "capture_image": image,
                     "options": options,
                 }
                 for letter in ("A", "B", "C", "D"):

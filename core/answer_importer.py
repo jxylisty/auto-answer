@@ -3,6 +3,16 @@ import re
 import json
 
 
+def _normalize_tf_symbols(text: str) -> str:
+    return (
+        str(text or "")
+        .replace("√", "TRUE")
+        .replace("✓", "TRUE")
+        .replace("×", "FALSE")
+        .replace("✗", "FALSE")
+    )
+
+
 SECTION_MAP = {
     "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
     "单选": 1, "多选": 2, "判断": 3, "填空": 4, "简答": 5,
@@ -54,8 +64,9 @@ def normalize_answer_text(text: str, number_template: Optional[Dict] = None) -> 
 
 def _parse_line_multi(line: str) -> List[Tuple[str, str]]:
     results = []
+    line = _normalize_tf_symbols(line)
     
-    multi_pattern = r'(\d+)\s*[\.．、:：\)]\s*([A-D]+)'
+    multi_pattern = r'(\d+)\s*[\.．、:：\)]\s*([A-Z]+)'
     matches = re.findall(multi_pattern, line)
     if len(matches) > 1:
         for num, ans in matches:
@@ -63,17 +74,17 @@ def _parse_line_multi(line: str) -> List[Tuple[str, str]]:
         return results
     
     patterns = [
-        (r'^Q(\d{6})\s+([A-D]+)$', 'global_id'),
+        (r'^Q(\d{6})\s+([A-Z]+)$', 'global_id'),
         (r'^Q(\d{6})\s+(正确|错误|对|错|T|F|true|false|是|否)$', 'global_id_tf'),
-        (r'^([一二三四五六七八九十]+)-(\d+)\s+([A-D]+)$', 'display_no'),
+        (r'^([一二三四五六七八九十]+)-(\d+)\s+([A-Z]+)$', 'display_no'),
         (r'^([一二三四五六七八九十]+)-(\d+)\s+(正确|错误|对|错|T|F|true|false|是|否)$', 'display_no_tf'),
-        (r'^(单选|多选|判断|填空|简答|单选题|多选题|判断题|填空题|简答题)\s*(\d+)\s+([A-D]+)$', 'type_prefix'),
+        (r'^(单选|多选|判断|填空|简答|单选题|多选题|判断题|填空题|简答题)\s*(\d+)\s+([A-Z]+)$', 'type_prefix'),
         (r'^(单选|多选|判断|填空|简答|单选题|多选题|判断题|填空题|简答题)\s*(\d+)\s+(正确|错误|对|错|T|F|true|false|是|否)$', 'type_prefix_tf'),
-        (r'^(\d+)\s*[\.．、:：\)]\s*([A-D]+)$', 'local_no_dot'),
-        (r'^(\d+)\s+([A-D]+)$', 'local_no'),
-        (r'^(\d+)([A-D])$', 'local_no_no_space'),
-        (r'^题目\s*(\d+)\s+([A-D]+)$', 'local_no_text'),
-        (r'^第\s*(\d+)\s*题\s*[：:.．]?\s*([A-D]+)$', 'local_no_question'),
+        (r'^(\d+)\s*[\.．、:：\)]\s*([A-Z]+)$', 'local_no_dot'),
+        (r'^(\d+)\s+([A-Z]+)$', 'local_no'),
+        (r'^(\d+)([A-Z])$', 'local_no_no_space'),
+        (r'^题目\s*(\d+)\s+([A-Z]+)$', 'local_no_text'),
+        (r'^第\s*(\d+)\s*题\s*[：:.．]?\s*([A-Z]+)$', 'local_no_question'),
         (r'^(\d+)\s+(正确|错误|对|错|T|F|true|false|是|否)$', 'local_no_tf'),
     ]
     
@@ -85,15 +96,15 @@ def _parse_line_multi(line: str) -> List[Tuple[str, str]]:
                 results.append(parsed)
             return results
     
-    if re.match(r'^[A-D]+$', line, re.IGNORECASE):
+    if re.match(r'^[A-Z]+$', line, re.IGNORECASE):
         if len(line) == 1:
             results.append(("next_auto", line.upper()))
         else:
             for ch in line.upper():
                 results.append(("next_auto", ch))
         return results
-    
-    split_pattern = r'^([A-D])\s*[,，;；\s]\s*([A-D])\s*[,，;；\s]?\s*([A-D]?)\s*[,，;；\s]?\s*([A-D]?)$'
+
+    split_pattern = r'^([A-Z])\s*[,，;；\s]\s*([A-Z])\s*[,，;；\s]?\s*([A-Z]?)\s*[,，;；\s]?\s*([A-Z]?)$'
     match = re.match(split_pattern, line, re.IGNORECASE)
     if match:
         for i in range(1, 5):
@@ -155,7 +166,7 @@ def _normalize_answer_value(answer: str) -> Optional[str]:
     if answer_lower in FALSE_VARIANTS:
         return 'FALSE'
     
-    if re.match(r'^[A-D]+$', answer.upper()):
+    if re.match(r'^[A-Z]+$', answer.upper()):
         return answer.upper()
     
     return None
@@ -221,13 +232,14 @@ class AnswerImporter:
         return self.answers
     
     def _parse_line(self, line: str) -> Optional[Tuple[str, str]]:
+        line = _normalize_tf_symbols(line)
         patterns = [
-            (r'^Q(\d{6})\s+([A-D]+)$', 'global_id'),
-            (r'^(\d+)\s+([A-D]+)$', 'local_no'),
-            (r'^([一二三四五六七八九十]+)-(\d+)\s+([A-D]+)$', 'display_no'),
-            (r'^(\d+)\.\s*([A-D]+)$', 'local_no_dot'),
-            (r'^题目\s*(\d+)\s+([A-D]+)$', 'local_no_text'),
-            (r'^第\s*(\d+)\s*题\s*[：:.．]?\s*([A-D]+)$', 'local_no_question'),
+            (r'^Q(\d{6})\s+([A-Z]+)$', 'global_id'),
+            (r'^(\d+)\s+([A-Z]+)$', 'local_no'),
+            (r'^([一二三四五六七八九十]+)-(\d+)\s+([A-Z]+)$', 'display_no'),
+            (r'^(\d+)\.\s*([A-Z]+)$', 'local_no_dot'),
+            (r'^题目\s*(\d+)\s+([A-Z]+)$', 'local_no_text'),
+            (r'^第\s*(\d+)\s*题\s*[：:.．]?\s*([A-Z]+)$', 'local_no_question'),
             (r'^([一二三四五六七八九十]+)-(\d+)\s+(正确|错误|对|错|T|F|true|false)$', 'display_no_tf'),
             (r'^(\d+)\s+(正确|错误|对|错|T|F|true|false)$', 'local_no_tf'),
         ]
@@ -237,7 +249,7 @@ class AnswerImporter:
             if match:
                 return self._extract_answer(match, pattern_type)
         
-        simple_match = re.match(r'^([A-D]+)$', line, re.IGNORECASE)
+        simple_match = re.match(r'^([A-Z]+)$', line, re.IGNORECASE)
         if simple_match:
             return "next_auto", simple_match.group(1).upper()
         
@@ -307,7 +319,7 @@ class AnswerImporter:
         if answer in ['TRUE', 'FALSE']:
             return True
         
-        if not re.match(r'^[A-D]+$', answer.upper()):
+        if not re.match(r'^[A-Z]+$', answer.upper()):
             return False
         
         return True

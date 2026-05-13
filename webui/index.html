@@ -1,0 +1,445 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>答题助手</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 左侧导航 -->
+        <aside class="sidebar">
+            <div class="logo">
+                <span class="logo-icon">⚡</span>
+                <span class="logo-text">答题助手</span>
+            </div>
+            <nav class="nav-steps">
+                <div class="nav-step active" data-step="1">
+                    <span class="step-num">1</span>
+                    <span class="step-label">截图识别</span>
+                </div>
+                <div class="nav-step" data-step="2">
+                    <span class="step-num">2</span>
+                    <span class="step-label">题目采集</span>
+                </div>
+                <div class="nav-step" data-step="3">
+                    <span class="step-num">3</span>
+                    <span class="step-label">答案输入</span>
+                </div>
+                <div class="nav-step" data-step="4">
+                    <span class="step-num">4</span>
+                    <span class="step-label">答案点击</span>
+                </div>
+                <div class="nav-step" data-step="5">
+                    <span class="step-num">5</span>
+                    <span class="step-label">日志结果</span>
+                </div>
+            </nav>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 步骤1: 截图识别 -->
+            <div class="step-content" data-step="1">
+                <div class="content-header">
+                    <h1>截图识别</h1>
+                    <p class="subtitle">OCR识别屏幕内容</p>
+                </div>
+                
+                <div class="ocr-actions">
+                    <button class="btn btn-primary btn-large" id="btnCaptureOCR">
+                        <span class="btn-icon">📷</span>
+                        截图识别
+                    </button>
+                    <button class="btn btn-secondary" id="btnFixedRegionOCR">
+                        <span class="btn-icon">📐</span>
+                        固定区域识别
+                    </button>
+                    <button class="btn btn-secondary" id="btnAdvancedSettings">
+                        <span class="btn-icon">⚙️</span>
+                        高级设置
+                    </button>
+                </div>
+                
+                <div class="advanced-panel" id="advancedPanel" style="display: none;">
+                    <div class="panel-header">
+                        <span>OCR 设置</span>
+                        <button class="btn-close" id="btnCloseAdvanced">&times;</button>
+                    </div>
+                    <div class="panel-content">
+                        <div class="form-group">
+                            <label>截图识别 OCR</label>
+                            <select class="select-input" id="ocrBackend">
+                                <option value="auto" selected>自动选择</option>
+                                <option value="rapidocr-onnxruntime">RapidOCR (ONNX)</option>
+                                <option value="rapidocr-openvino">RapidOCR (OpenVINO)</option>
+                                <option value="windows-ocr">Windows OCR</option>
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>正文 OCR</label>
+                                <select class="select-input" id="textOcrBackend">
+                                    <option value="auto" selected>自动选择</option>
+                                    <option value="rapidocr-onnxruntime">RapidOCR (ONNX)</option>
+                                    <option value="rapidocr-openvino">RapidOCR (OpenVINO)</option>
+                                    <option value="windows-ocr">Windows OCR</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>题号 OCR</label>
+                                <select class="select-input" id="numberOcrBackend">
+                                    <option value="auto" selected>自动选择</option>
+                                    <option value="rapidocr-onnxruntime">RapidOCR (ONNX)</option>
+                                    <option value="rapidocr-openvino">RapidOCR (OpenVINO)</option>
+                                    <option value="windows-ocr">Windows OCR</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>选项 OCR</label>
+                                <select class="select-input" id="optionOcrBackend">
+                                    <option value="auto" selected>自动选择</option>
+                                    <option value="rapidocr-onnxruntime">RapidOCR (ONNX)</option>
+                                    <option value="rapidocr-openvino">RapidOCR (OpenVINO)</option>
+                                    <option value="windows-ocr">Windows OCR</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>解析 OCR</label>
+                                <select class="select-input" id="parseOcrBackend">
+                                    <option value="auto" selected>自动选择</option>
+                                    <option value="rapidocr-onnxruntime">RapidOCR (ONNX)</option>
+                                    <option value="rapidocr-openvino">RapidOCR (OpenVINO)</option>
+                                    <option value="windows-ocr">Windows OCR</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="ocr-result-section">
+                    <div class="screenshot-preview">
+                        <div class="preview-header">
+                            <span class="preview-title">截图预览</span>
+                            <button class="btn btn-secondary btn-sm" id="btnCopyScreenshot">复制截图</button>
+                        </div>
+                        <div class="preview-area" id="screenshotPreview">
+                            <img id="screenshotPreviewImg" style="max-width: 100%; max-height: 100%; display: none;" />
+                            <div class="preview-placeholder" id="screenshotPlaceholder">
+                                <span>暂无截图</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="ocr-output">
+                        <div class="output-header">
+                            <span class="output-title">OCR 结果</span>
+                            <div class="output-actions">
+                                <button class="btn btn-secondary btn-sm" id="btnCopyResult">复制结果</button>
+                                <button class="btn btn-secondary btn-sm" id="btnClearResult">清空</button>
+                            </div>
+                        </div>
+                        <textarea class="ocr-textarea" id="ocrResultText" placeholder="OCR识别结果将显示在这里..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 步骤2: 题目采集 -->
+            <div class="step-content" data-step="2" style="display: none;">
+                <div class="content-header">
+                    <h1>题目采集</h1>
+                    <p class="subtitle">采集题目正文和题号坐标</p>
+                </div>
+                
+                <!-- 第一步：区域选择 -->
+                <div class="collection-section">
+                    <div class="section-header">
+                        <span class="section-step">第一步</span>
+                        <span class="section-title">区域选择</span>
+                    </div>
+                    <div class="region-select-actions">
+                        <button class="btn btn-primary" id="btnSelectQuestionRegion">选择题目区域</button>
+                        <button class="btn btn-secondary" id="btnSelectNumberRegion">选择题号区域</button>
+                        <button class="btn btn-secondary" id="btnSaveNumberCapture">保存题号截图</button>
+                    </div>
+                    <div class="region-status">
+                        <div class="region-status-item">
+                            <span class="region-status-label">题目区域</span>
+                            <span class="region-status-value" id="questionRegionStatus">未选择</span>
+                        </div>
+                        <div class="region-status-item">
+                            <span class="region-status-label">题号区域</span>
+                            <span class="region-status-value" id="numberRegionStatus">未选择</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 第二步：识别题号 -->
+                <div class="collection-section">
+                    <div class="section-header">
+                        <span class="section-step">第二步</span>
+                        <span class="section-title">识别题号</span>
+                    </div>
+                    <div class="detect-actions">
+                        <button class="btn btn-primary" id="btnDetectQuestions">智能识别题号坐标</button>
+                    </div>
+                    <div class="progress-section" id="detectProgress" style="display: none;">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="detectProgressFill"></div>
+                        </div>
+                        <div class="progress-text" id="detectProgressText">0 / 0</div>
+                    </div>
+
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>题号</th>
+                                    <th>X</th>
+                                    <th>Y</th>
+                                    <th>来源</th>
+                                </tr>
+                            </thead>
+                            <tbody id="questionPointsTableBody">
+                                <tr><td colspan="4" class="empty-text">暂无数据</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- 第三步：采集题目 -->
+                <div class="collection-section">
+                    <div class="section-header">
+                        <span class="section-step">第三步</span>
+                        <span class="section-title">采集题目</span>
+                    </div>
+                    <div class="collection-controls">
+                        <div class="collection-buttons">
+                            <button class="btn btn-primary" id="btnStartCollection">开始采集</button>
+                            <button class="btn btn-secondary" id="btnParseOptions">解析选项</button>
+                            <button class="btn btn-secondary btn-danger" id="btnStopCollection">停止</button>
+                        </div>
+                        <div class="collection-options">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="chkSaveCapture" checked>
+                                <span>保存截图</span>
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="chkTestMode">
+                                <span>测试模式</span>
+                            </label>
+                            <div class="interval-control">
+                                <label>间隔(秒)</label>
+                                <input type="number" class="number-input" id="collectionInterval" value="0.4" step="0.1" min="0">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="progress-section" id="collectionProgress" style="display: none;">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="collectionProgressFill"></div>
+                        </div>
+                        <div class="progress-text" id="collectionProgressText">0 / 0</div>
+                    </div>
+
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>index</th>
+                                    <th>click_x</th>
+                                    <th>click_y</th>
+                                    <th>ocr_text</th>
+                                    <th>image_path</th>
+                                    <th>status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="collectionResultsTableBody">
+                                <tr><td colspan="6" class="empty-text">暂无数据</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="export-actions" style="margin-top: 12px;">
+                        <button class="btn btn-secondary" id="btnExportQuestions">复制所有题目</button>
+                        <button class="btn btn-secondary" id="btnGetAIPrompt">复制AI提示词</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 步骤3: 答案输入 -->
+            <div class="step-content" data-step="3" style="display: none;">
+                <div class="content-header">
+                    <h1>答案输入</h1>
+                    <p class="subtitle">粘贴答案后点击解析，自动填充到列表</p>
+                </div>
+                <div class="input-section">
+                    <textarea class="answer-textarea" id="answerInput" placeholder="粘贴答案，支持多种格式：
+1 A / 1.A / 1、A / 1) A / 1A / 第1题 A / 题目1 A
+二-1 ABC / 三-1 正确 / 判断1 对 / Q000021 AD
+A B C D / ABCDA (按顺序解析)"></textarea>
+                </div>
+                <div class="action-bar">
+                    <button class="btn btn-primary" id="btnParseAnswers">解析答案</button>
+                    <button class="btn btn-secondary" id="btnClearAnswers">清空</button>
+                </div>
+                <div class="progress-section" id="parseProgress" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="parseProgressFill"></div>
+                    </div>
+                    <div class="progress-text" id="parseProgressText">0 / 0</div>
+                </div>
+                <div class="result-section" id="answerResultSection" style="display: none;">
+                    <div class="section-title">解析结果</div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>原始输入</th>
+                                    <th>匹配题号</th>
+                                    <th>标准答案</th>
+                                    <th>状态</th>
+                                    <th>说明</th>
+                                </tr>
+                            </thead>
+                            <tbody id="answerTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 步骤4: 答案点击 -->
+            <div class="step-content" data-step="4" style="display: none;">
+                <div class="content-header">
+                    <h1>答案点击</h1>
+                    <p class="subtitle">基于已解析的答案执行点击</p>
+                </div>
+                
+                <div class="answer-click-controls">
+                    <div class="click-buttons">
+                        <button class="btn btn-primary" id="btnExecuteAll">执行全部</button>
+                        <button class="btn btn-danger" id="btnStopExecution">停止</button>
+                    </div>
+                    <div class="click-options">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="chkAnswerTestMode">
+                                <span>测试模式</span>
+                            </label>
+                    </div>
+                </div>
+                
+                <div class="answer-click-progress" id="answerClickProgress" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="answerClickProgressFill"></div>
+                    </div>
+                    <div class="progress-text" id="answerClickProgressText">0 / 0</div>
+                </div>
+                
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>题号</th>
+                                <th>用户答案</th>
+                                <th>题号点击坐标</th>
+                                <th>选项点击坐标</th>
+                                <th>状态</th>
+                            </tr>
+                            <tr id="answerClickSummary" class="summary-row">
+                                <td colspan="5">就绪: 0 | 无答案: 0 | 无坐标: 0 | 需检查: 0</td>
+                            </tr>
+                        </thead>
+                        <tbody id="answerClickTableBody">
+                            <tr><td colspan="5" class="empty-text">暂无数据 - 请先在"答案输入"页面解析答案</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 步骤5: 日志结果 -->
+            <div class="step-content" data-step="5" style="display: none;">
+                <div class="content-header">
+                    <h1>日志结果</h1>
+                    <p class="subtitle">操作日志和执行结果</p>
+                </div>
+                <div class="log-content" id="logContent">
+                    <div class="log-empty">暂无日志</div>
+                </div>
+            </div>
+        </main>
+
+        <!-- 右侧状态面板 -->
+        <aside class="status-panel">
+            <div class="status-card">
+                <div class="status-header">
+                    <span class="status-icon">📋</span>
+                    <span>当前状态</span>
+                </div>
+                <div class="status-content">
+                    <div class="status-item">
+                        <span class="status-label">题目区域</span>
+                        <span class="status-value" id="stateQuestionRegion">未选择</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">题号区域</span>
+                        <span class="status-value" id="stateNumberRegion">未选择</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">题号坐标</span>
+                        <span class="status-value" id="stateNumberCoords">0 个</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">已采集题目</span>
+                        <span class="status-value" id="stateCollectedQuestions">0 个</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">已解析答案</span>
+                        <span class="status-value" id="stateParsedAnswers">0 个</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">当前模式</span>
+                        <span class="status-value" id="stateMode">测试</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="status-card log-card">
+                <div class="status-header">
+                    <span class="status-icon">📝</span>
+                    <span>操作日志</span>
+                </div>
+                <div class="log-mini" id="miniLog"></div>
+            </div>
+        </aside>
+    </div>
+
+    <div id="captureOverlay" class="capture-overlay" style="display: none;">
+        <div class="capture-container">
+            <div class="capture-toolbar">
+                <span class="capture-title">拖拽选择截图区域</span>
+                <button class="capture-btn capture-btn-cancel" onclick="cancelCapture()">取消 (Esc)</button>
+                <button class="capture-btn capture-btn-confirm" onclick="confirmCapture()">确认识别</button>
+            </div>
+            <div class="capture-viewport" id="captureViewport">
+                <img id="captureImage" class="capture-image" />
+                <div id="selectionBox" class="selection-box" style="display: none;">
+                    <div class="selection-handle nw"></div>
+                    <div class="selection-handle ne"></div>
+                    <div class="selection-handle sw"></div>
+                    <div class="selection-handle se"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+
+
+

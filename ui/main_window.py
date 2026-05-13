@@ -48,15 +48,11 @@ from core.ocr_engine import (
     detect_text_boxes_windows_ocr,
     get_ocr_backend,
 )
+from core.option_extractor import extract_options_from_question_image
 from core.screenshot import grab_region
 from core.text_locator import locate_text_targets
 from core.worker import OcrWorker
 from ui.selection_overlay import SelectionOverlay
-from ui.template_helper import (
-    build_template_tab_ui,
-    init_template_attributes,
-    template_handle_region_selected,
-)
 
 try:
     import keyboard
@@ -65,10 +61,10 @@ except Exception:
 
 
 DEFAULT_FRONTEND_COLLECT_CONFIG = {
-    "click_delay": 0.3,
+    "click_delay": 0.0,
     "interval": 0.0,
-    "start_countdown": 1.0,
-    "dry_run": True,
+    "start_countdown": 0.4,
+    "dry_run": False,
     "save_images": True,
 }
 
@@ -102,8 +98,6 @@ class MainWindow(QMainWindow):
         self.latest_collect_click = "-"
         self.latest_collect_image_path = "-"
         self.latest_option_parse = {}
-        
-        init_template_attributes(self)
 
         self.setWindowTitle("截图 OCR")
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -112,15 +106,12 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.ocr_tab = QWidget()
-        self.template_tab = QWidget()
         self.collect_tab = QWidget()
         self.tabs.addTab(self.ocr_tab, "截图 OCR")
-        self.tabs.addTab(self.template_tab, "模板辅助")
-        self.tabs.addTab(self.collect_tab, "旧版前台采集（备用）")
+        self.tabs.addTab(self.collect_tab, "主页面")
         self.setCentralWidget(self.tabs)
 
         self._build_ocr_tab()
-        build_template_tab_ui(self)
         self._build_collect_tab()
         self.apply_collect_config_to_ui(self.frontend_collect_config)
         self.apply_styles()
@@ -227,7 +218,7 @@ class MainWindow(QMainWindow):
         self.single_ocr_backend_combo = QComboBox()
         self._populate_text_ocr_combo(self.single_ocr_backend_combo)
         self.single_ocr_backend_combo.setCurrentIndex(
-            max(0, self.single_ocr_backend_combo.findData("windows-ocr"))
+            max(0, self.single_ocr_backend_combo.findData("rapidocr-openvino"))
         )
         self.result_edit = QTextEdit()
         self.preview_label = QLabel("截图预览")
@@ -322,6 +313,8 @@ class MainWindow(QMainWindow):
         self.copy_all_collect_text_btn = QPushButton("复制全部采集文本")
         self.clear_collect_text_btn = QPushButton("清空采集文本")
 
+        self.parse_collected_options_btn = QPushButton("解析已采集选项")
+        self.collect_start_btn.setText("③ 解析选项和正文")
         self.collect_start_btn.setObjectName("primaryLarge")
         self.collect_stop_btn.setObjectName("dangerLarge")
         self.fill_answers_btn.setObjectName("primaryLarge")
@@ -347,13 +340,16 @@ class MainWindow(QMainWindow):
         )
         self.collect_hint_label.setWordWrap(True)
         self.collect_hint_label.setObjectName("hintText")
+        self.collect_hint_label.setText("点击等待 0.00 秒，开始倒计时 0.4 秒")
 
         self.click_delay_spin = QDoubleSpinBox()
         self.interval_spin = QDoubleSpinBox()
         self.start_countdown_spin = QDoubleSpinBox()
-        self._configure_spinbox(self.click_delay_spin, 0.0, 60.0, 0.3, 0.1)
+        self._configure_spinbox(self.click_delay_spin, 0.0, 60.0, 0.0, 0.1)
         self._configure_spinbox(self.interval_spin, 0.0, 60.0, 0.0, 0.1)
-        self._configure_spinbox(self.start_countdown_spin, 0.0, 60.0, 1.0, 0.1)
+        self._configure_spinbox(self.start_countdown_spin, 0.0, 60.0, 0.4, 0.1)
+        self.click_delay_spin.setValue(0.0)
+        self.start_countdown_spin.setValue(0.4)
         self.start_countdown_spin.setDecimals(2)
         self.interval_spin.setDecimals(2)
         self.start_countdown_spin.setDecimals(2)
@@ -366,16 +362,11 @@ class MainWindow(QMainWindow):
         self.collect_text_ocr_backend_combo = QComboBox()
         self._populate_text_ocr_combo(self.collect_text_ocr_backend_combo)
         self.collect_text_ocr_backend_combo.setCurrentIndex(
-            max(0, self.collect_text_ocr_backend_combo.findData("windows-ocr"))
-        )
-        self.collect_option_ocr_backend_combo = QComboBox()
-        self._populate_box_ocr_combo(self.collect_option_ocr_backend_combo)
-        self.collect_option_ocr_backend_combo.setCurrentIndex(
-            max(0, self.collect_option_ocr_backend_combo.findData("rapidocr-openvino"))
+            max(0, self.collect_text_ocr_backend_combo.findData("rapidocr-openvino"))
         )
 
         self.test_mode_checkbox = QCheckBox("测试模式（不实际点击）")
-        self.test_mode_checkbox.setChecked(True)
+        self.test_mode_checkbox.setChecked(False)
         self.save_screenshots_checkbox = QCheckBox("保存截图")
 
         self.collect_progress_label = QLabel("未开始")
@@ -385,6 +376,7 @@ class MainWindow(QMainWindow):
         self.collect_status_region_value = QLabel("未设置")
         self.collect_status_path_value = QLabel("-")
         self.collect_status_path_value.setWordWrap(True)
+        self.collect_status_mode_value.setText("正式采集")
         
         self.collect_progress_bar = QProgressBar()
         self.collect_progress_bar.setMinimum(0)
@@ -445,6 +437,7 @@ class MainWindow(QMainWindow):
         self.collect_stop_btn.clicked.connect(self.stop_collection)
         self.preview_answers_btn.clicked.connect(self.preview_answer_sequence)
         self.fill_answers_btn.clicked.connect(self.fill_answers_by_sequence)
+        self.parse_collected_options_btn.clicked.connect(self.parse_collected_options)
         self.copy_all_collect_text_btn.clicked.connect(self.copy_all_collect_text)
         self.clear_collect_text_btn.clicked.connect(self.clear_collect_text)
         self.test_mode_checkbox.stateChanged.connect(self.refresh_collect_status_labels)
@@ -469,10 +462,6 @@ class MainWindow(QMainWindow):
         card, layout = self._make_card("第二步：智能识别题号")
         layout.addWidget(QLabel("题号 OCR："))
         layout.addWidget(self.ocr_backend_combo)
-        layout.addWidget(QLabel("正文 OCR："))
-        layout.addWidget(self.collect_text_ocr_backend_combo)
-        layout.addWidget(QLabel("选项 OCR："))
-        layout.addWidget(self.collect_option_ocr_backend_combo)
         layout.addSpacing(8)
         layout.addWidget(self.detect_question_points_btn)
         detect_row = QHBoxLayout()
@@ -551,6 +540,7 @@ class MainWindow(QMainWindow):
         card, layout = self._make_card("采集到的题目文本")
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
+        buttons.addWidget(self.parse_collected_options_btn)
         buttons.addWidget(self.copy_all_collect_text_btn)
         buttons.addWidget(self.clear_collect_text_btn)
         buttons.addStretch(1)
@@ -618,8 +608,96 @@ class MainWindow(QMainWindow):
     def clear_collect_text(self):
         self.all_collect_text_chunks.clear()
         self.collect_text_edit.clear()
+        self.latest_option_parse = {}
+        self.latest_options_edit.clear()
         self.answer_sequence_edit.clear()
         self.answer_preview_table.setRowCount(0)
+
+    def parse_collected_options(self):
+        if not self.collected_question_records:
+            QMessageBox.information(self, "提示", "还没有可解析的采集结果。")
+            return
+        if self.collect_region is None:
+            QMessageBox.information(self, "提示", "请先选择题目截图区域。")
+            return
+
+        backend_name = self.ocr_backend_combo.currentData() or "auto"
+        total = len(self.collected_question_records)
+        self.append_collect_log(f"开始独立解析 {total} 题选项，OCR: {backend_name}")
+        self.collect_progress_bar.setMaximum(max(1, total))
+        self.collect_progress_bar.setValue(0)
+        self.collect_progress_label.setText(f"解析选项 0/{total}")
+        self.collect_status_progress_value.setText(f"解析选项 0/{total}")
+        self.set_status("正在解析已采集选项...")
+
+        parsed_count = 0
+        skipped_count = 0
+        started_at = time.perf_counter()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for idx, record in enumerate(self.collected_question_records, start=1):
+                QApplication.processEvents()
+                image = record.get("capture_image")
+                if image is None:
+                    image_path = record.get("image_path", "") or ""
+                    if image_path and Path(image_path).exists():
+                        try:
+                            with Image.open(image_path) as file_image:
+                                image = file_image.copy()
+                        except Exception as exc:
+                            self.append_collect_log(
+                                f"第 {record['index']} 题加载截图失败: {exc!r}"
+                            )
+
+                self.collect_progress_bar.setValue(idx)
+                self.collect_progress_label.setText(f"解析选项 {idx}/{total}")
+                self.collect_status_progress_value.setText(f"解析选项 {idx}/{total}")
+
+                if image is None:
+                    skipped_count += 1
+                    self._set_record_options(record, {})
+                    self.append_collect_log(f"第 {record['index']} 题缺少截图，跳过选项解析")
+                    continue
+
+                option_started_at = time.perf_counter()
+                options = extract_options_from_question_image(
+                    image,
+                    self.collect_region.left(),
+                    self.collect_region.top(),
+                    backend_name=backend_name,
+                )
+                option_elapsed = time.perf_counter() - option_started_at
+                self._set_record_options(record, options)
+                parsed_count += 1
+                if options:
+                    labels = ", ".join(sorted(options.keys()))
+                    self.append_collect_log(
+                        f"第 {record['index']} 题选项解析完成: {labels}，{option_elapsed:.2f}s"
+                    )
+                else:
+                    self.append_collect_log(
+                        f"第 {record['index']} 题未识别到任何选项坐标，{option_elapsed:.2f}s"
+                    )
+
+            self._rebuild_collect_text_blocks()
+            self.latest_option_parse = (
+                self.collected_question_records[-1].get("options", {}) or {}
+            )
+            self.latest_options_edit.setPlainText(
+                self._format_options_text(self.latest_option_parse)
+            )
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        elapsed = time.perf_counter() - started_at
+        self.collect_progress_label.setText(f"选项解析完成 {parsed_count}/{total}")
+        self.collect_status_progress_value.setText(f"选项解析完成 {parsed_count}/{total}")
+        self.set_status(
+            f"选项解析完成，成功 {parsed_count} 题，跳过 {skipped_count} 题"
+        )
+        self.append_collect_log(
+            f"选项解析结束，成功 {parsed_count} 题，跳过 {skipped_count} 题，总耗时 {elapsed:.2f}s"
+        )
 
     def _build_llm_answer_prompt(self) -> str:
         return (
@@ -693,6 +771,38 @@ class MainWindow(QMainWindow):
         pattern = rf"^\s*(?:\(|（)?\s*{re.escape(label)}\s*(?:\)|）|[.、:：])?\s*"
         return re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE).strip()
 
+    def _compact_ocr_line(self, text: str) -> str:
+        compacted = unicodedata.normalize("NFKC", text or "").strip()
+        if not compacted:
+            return ""
+        compacted = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", compacted)
+        compacted = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[，。；：！？、“”‘’（）《》])", "", compacted)
+        compacted = re.sub(r"(?<=[，。；：！？、“”‘’（）《》])\s+(?=[\u4e00-\u9fff])", "", compacted)
+        compacted = re.sub(r"\s{2,}", " ", compacted)
+        return compacted.strip()
+
+    def _strip_inline_option_labels(self, text: str, options: dict) -> str:
+        if not text or not options:
+            return text
+
+        option_labels = {
+            label for label in ("A", "B", "C", "D", "T", "F", "正确", "错误")
+            if label in options
+        }
+        if {"A", "B"}.issubset(option_labels):
+            match = re.search(r"\bA\s*B(?:\s*C)?(?:\s*D)?(?:\s*E)?\b", text, re.IGNORECASE)
+            if match:
+                return text[:match.start()].strip()
+        if {"正确", "错误"}.issubset(option_labels):
+            match = re.search(r"正确\s*错误", text)
+            if match:
+                return text[:match.start()].strip()
+        if {"T", "F"}.issubset(option_labels):
+            match = re.search(r"\bT\s*F\b", text, re.IGNORECASE)
+            if match:
+                return text[:match.start()].strip()
+        return text
+
     def _iter_llm_option_items(self, options: dict) -> list[tuple[str, str]]:
         if not options:
             return []
@@ -729,7 +839,7 @@ class MainWindow(QMainWindow):
         options = record.get("options", {}) or {}
 
         raw_lines = [
-            unicodedata.normalize("NFKC", line).strip()
+            self._compact_ocr_line(line)
             for line in (record.get("ocr_text", "") or "").splitlines()
         ]
         filtered_lines: list[str] = []
@@ -744,7 +854,9 @@ class MainWindow(QMainWindow):
                 continue
             if re.fullmatch(r"(?:\(|（)?\s*(?:[A-Z]|T|F|正确|错误|√|×|✓|✗|✔|✘)\s*(?:\)|）)?", line, re.IGNORECASE):
                 continue
-            filtered_lines.append(line)
+            cleaned_line = self._strip_inline_option_labels(line, options)
+            if cleaned_line:
+                filtered_lines.append(cleaned_line)
 
         option_lines = [f"{label}. {text}" for label, text in self._iter_llm_option_items(options)]
         body_lines = filtered_lines + option_lines
@@ -1250,6 +1362,27 @@ class MainWindow(QMainWindow):
         scrollbar = self.collect_log_edit.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
+    def _set_record_options(self, record: dict, options: dict):
+        options = options or {}
+        record["options"] = options
+        for letter in ("A", "B", "C", "D"):
+            option_data = options.get(letter, {})
+            record[f"option_{letter}_text"] = option_data.get("text", "")
+            record[f"option_{letter}_x"] = option_data.get("screen_x", "")
+            record[f"option_{letter}_y"] = option_data.get("screen_y", "")
+            record[f"option_{letter}_click_x"] = option_data.get("click_x", "")
+            record[f"option_{letter}_click_y"] = option_data.get("click_y", "")
+
+    def _rebuild_collect_text_blocks(self):
+        blocks = [
+            self._build_collect_question_block(record)
+            for record in self.collected_question_records
+        ]
+        self.all_collect_text_chunks = blocks
+        self.collect_text_edit.setPlainText("\n".join(blocks))
+        scrollbar = self.collect_text_edit.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
     def append_collect_result_record(self, record: dict):
         block = self._build_collect_question_block(record)
         self.all_collect_text_chunks.append(block)
@@ -1313,6 +1446,7 @@ class MainWindow(QMainWindow):
         self.collect_stop_btn.setEnabled(running)
         self.preview_answers_btn.setEnabled(not running)
         self.fill_answers_btn.setEnabled(not running)
+        self.parse_collected_options_btn.setEnabled(not running)
         self.select_collect_region_btn.setEnabled(not running)
         self.select_number_region_btn.setEnabled(not running)
         self.detect_question_points_btn.setEnabled(not running)
@@ -1326,8 +1460,6 @@ class MainWindow(QMainWindow):
         self.test_mode_checkbox.setEnabled(not running)
         self.save_screenshots_checkbox.setEnabled(not running)
         self.ocr_backend_combo.setEnabled(not running)
-        self.collect_text_ocr_backend_combo.setEnabled(not running)
-        self.collect_option_ocr_backend_combo.setEnabled(not running)
         self.capture_option_a_btn.setEnabled(not running)
         self.capture_option_b_btn.setEnabled(not running)
         self.capture_option_c_btn.setEnabled(not running)
@@ -1386,13 +1518,6 @@ class MainWindow(QMainWindow):
             self.append_collect_log("已选择题号区域")
             return
         
-        if mode in ["template_top", "template_bottom", "template_question", "manual_point1", "manual_point2"]:
-            template_handle_region_selected(self, rect)
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-            return
-
         self.last_region = QRect(rect)
         self.start_ocr_task(self.last_region)
 
@@ -1545,6 +1670,34 @@ class MainWindow(QMainWindow):
             print("无法推断：题号位置过于集中")
             return None
 
+    def _detect_expected_question_count_from_boxes(self, boxes: list[dict]) -> Optional[int]:
+        total_from_progress = []
+        total_from_section = []
+
+        for box in boxes:
+            text = unicodedata.normalize("NFKC", box.get("text", "") or "").strip()
+            if not text:
+                continue
+
+            for match in re.finditer(r"[\\/／]\s*(\d{1,3})\s*题?", text):
+                total_from_progress.append(int(match.group(1)))
+
+            match = re.search(r"共\s*(\d{1,3})\s*题", text)
+            if match:
+                total_from_section.append(int(match.group(1)))
+
+        if total_from_progress:
+            expected = max(total_from_progress)
+            print(f"从进度文本推断总题数: {expected}")
+            return expected
+
+        if total_from_section:
+            expected = sum(total_from_section)
+            print(f"从分区文本推断总题数: {expected}")
+            return expected
+
+        return None
+
     def detect_question_points(self):
         if self.number_region is None:
             QMessageBox.information(self, "提示", "请先选择题号区域。")
@@ -1635,14 +1788,14 @@ class MainWindow(QMainWindow):
         
         print(f"检测到 {len(groups)} 个题号组")
         
-        valid_groups = [group for group in groups if len(group) >= 2]
-        if valid_groups:
-            digit_boxes = [box for group in valid_groups for box in group]
-            print(f"过滤孤立数字后保留 {len(digit_boxes)} 个题号框")
-
         points = []
-        
-        for box in digit_boxes:
+        ordered_digit_boxes = []
+        for group in groups:
+            ordered_digit_boxes.extend(sorted(group, key=lambda item: item["center_x"]))
+        if not ordered_digit_boxes:
+            ordered_digit_boxes = sorted_digit_boxes
+
+        for box in ordered_digit_boxes:
             text = box["text"].strip()
             no = int(text)
             screen_x = int(round(self.number_region.left() + box["center_x"]))
@@ -1656,9 +1809,15 @@ class MainWindow(QMainWindow):
             })
             print(f"  识别题号: {no} at ({screen_x}, {screen_y})")
         
-        points.sort(key=lambda p: (p["y"], p["x"]))
         print(f"共识别 {len(points)} 个题号（不去重）")
         
+        expected_count = self._detect_expected_question_count_from_boxes(boxes)
+        if expected_count and len(points) < expected_count:
+            inferred_points = self._infer_question_points(points, expected_count)
+            if inferred_points:
+                points = inferred_points
+                print(f"已按总题数补齐到 {len(points)} 个题号坐标")
+
         self.detected_question_points = points
         self.detected_points_table.setRowCount(0)
 
@@ -1793,9 +1952,9 @@ class MainWindow(QMainWindow):
             start_countdown=self.start_countdown_spin.value(),
             test_mode=self.test_mode_checkbox.isChecked(),
             save_screenshots=self.save_screenshots_checkbox.isChecked(),
-            text_ocr_backend=self.collect_text_ocr_backend_combo.currentData(),
-            option_ocr_backend=self.collect_option_ocr_backend_combo.currentData(),
-            parse_options=True,
+            text_ocr_backend=self.ocr_backend_combo.currentData(),
+            option_ocr_backend=self.ocr_backend_combo.currentData(),
+            parse_options=False,
             question_points=question_points,
         )
         self.collect_worker.moveToThread(self.collect_thread)

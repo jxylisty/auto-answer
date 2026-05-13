@@ -4,7 +4,6 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageOps
-from rapidocr_onnxruntime import RapidOCR
 
 
 class BaseOcrBackend(ABC):
@@ -23,6 +22,8 @@ class RapidOcrBackend(BaseOcrBackend):
 
     def _get_engine(self):
         if self._engine is None:
+            from rapidocr_onnxruntime import RapidOCR
+
             self._engine = RapidOCR()
         return self._engine
 
@@ -209,10 +210,10 @@ def _get_text_backend_candidates(backend_name: str) -> list[str]:
     if backend_name and backend_name != "auto":
         return [backend_name]
     return [
+        "rapidocr-openvino",
         "windows-ocr",
         "rapidocr-onnxruntime",
         "paddleocr",
-        "rapidocr-openvino",
     ]
 
 
@@ -267,49 +268,62 @@ def detect_text_boxes_windows_ocr(image: Image.Image) -> list[dict]:
         return []
 
     scale = 3
-    work_image = image
-    if image.width > 0 and image.height > 0:
-        gray_image = ImageOps.grayscale(image)
-        enhanced_image = ImageOps.autocontrast(gray_image)
-        work_image = enhanced_image.resize(
-            (image.width * scale, image.height * scale),
+    gray_image = ImageOps.grayscale(image)
+    candidates = [ImageOps.autocontrast(gray_image)]
+    candidates.append(ImageOps.invert(candidates[0]))
+
+    merged_boxes: list[dict] = []
+    for work_source in candidates:
+        work_image = work_source.resize(
+            (max(1, image.width * scale), max(1, image.height * scale)),
             Image.Resampling.LANCZOS,
         )
 
-    try:
-        result = backend._recognize_result(work_image)
-    except Exception as exc:
-        print(f"Windows OCR detect boxes failed: {repr(exc)}")
-        return []
+        try:
+            result = backend._recognize_result(work_image)
+        except Exception as exc:
+            print(f"Windows OCR detect boxes failed: {repr(exc)}")
+            continue
 
-    boxes: list[dict] = []
-    for line in getattr(result, "lines", []) or []:
-        for word in getattr(line, "words", []) or []:
-            text = (getattr(word, "text", "") or "").strip()
-            rect = getattr(word, "bounding_rect", None)
-            if not rect:
-                continue
+        for line in getattr(result, "lines", []) or []:
+            for word in getattr(line, "words", []) or []:
+                text = (getattr(word, "text", "") or "").strip()
+                rect = getattr(word, "bounding_rect", None)
+                if not rect or not text:
+                    continue
 
-            x = int(round(getattr(rect, "x", 0) / scale))
-            y = int(round(getattr(rect, "y", 0) / scale))
-            width = int(round(getattr(rect, "width", 0) / scale))
-            height = int(round(getattr(rect, "height", 0) / scale))
-            center_x = x + width / 2
-            center_y = y + height / 2
+                x = int(round(getattr(rect, "x", 0) / scale))
+                y = int(round(getattr(rect, "y", 0) / scale))
+                width = int(round(getattr(rect, "width", 0) / scale))
+                height = int(round(getattr(rect, "height", 0) / scale))
+                center_x = x + width / 2
+                center_y = y + height / 2
 
-            boxes.append(
-                {
-                    "text": text,
-                    "x": x,
-                    "y": y,
-                    "width": width,
-                    "height": height,
-                    "center_x": center_x,
-                    "center_y": center_y,
-                    "source": "windows-ocr",
-                }
-            )
-    return boxes
+                duplicate = False
+                for existing in merged_boxes:
+                    if (
+                        existing["text"] == text
+                        and abs(existing["center_x"] - center_x) <= 8
+                        and abs(existing["center_y"] - center_y) <= 8
+                    ):
+                        duplicate = True
+                        break
+                if duplicate:
+                    continue
+
+                merged_boxes.append(
+                    {
+                        "text": text,
+                        "x": x,
+                        "y": y,
+                        "width": width,
+                        "height": height,
+                        "center_x": center_x,
+                        "center_y": center_y,
+                        "source": "windows-ocr",
+                    }
+                )
+    return merged_boxes
 
 
 def detect_text_boxes_rapidocr(image: Image.Image) -> list[dict]:
