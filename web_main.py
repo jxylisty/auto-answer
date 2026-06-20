@@ -106,7 +106,7 @@ class Api:
         return parse_answers(text)
 
     def build_answer_click_tasks(self, answers: list):
-        from web_answer_bridge import build_answer_click_tasks
+        from api_bridge import build_answer_click_tasks
         return build_answer_click_tasks(answers)
 
     def execute_selected_answer(self, index: int, options: dict = None):
@@ -132,30 +132,38 @@ class Api:
 
 class SelectionController:
     def __init__(self, app, window):
-        from PySide6.QtCore import QObject, Signal, Qt, QEventLoop, QThread
-
-        class _Bridge(QObject):
-            request_select = Signal(object)
-
-            def __init__(self, controller):
-                super().__init__()
-                self._controller = controller
-                self.request_select.connect(self._handle_select, Qt.QueuedConnection)
-
-            def _handle_select(self, payload):
-                payload["result"] = self._controller._select_region_on_main(payload["mode"])
-                payload["event"].set()
-
         self._app = app
         self._window = window
-        self._QEventLoop = QEventLoop
-        self._QThread = QThread
-        self._bridge = _Bridge(self)
-        self._bridge.moveToThread(app.thread())
+        self._QEventLoop = None
+        self._QThread = None
+        self._bridge = None
+
+        try:
+            from PySide6.QtCore import QObject, Signal, Qt, QEventLoop, QThread
+
+            class _Bridge(QObject):
+                request_select = Signal(object)
+
+                def __init__(self, controller):
+                    super().__init__()
+                    self._controller = controller
+                    self.request_select.connect(self._handle_select, Qt.QueuedConnection)
+
+                def _handle_select(self, payload):
+                    payload["result"] = self._controller._select_region_on_main(payload["mode"])
+                    payload["event"].set()
+
+            self._QEventLoop = QEventLoop
+            self._QThread = QThread
+            self._bridge = _Bridge(self)
+            if app is not None:
+                self._bridge.moveToThread(app.thread())
+        except ImportError:
+            pass
 
     def _select_region_on_main(self, mode: str):
         from PySide6.QtWidgets import QApplication
-        from ui.selection_overlay import SelectionOverlay
+        from core.selection_overlay import SelectionOverlay
         import api_bridge
 
         result = {"success": False, "error": "框选未返回结果"}
@@ -220,6 +228,11 @@ class SelectionController:
                     pass
 
     def select_region(self, mode: str):
+        if self._app is None or self._QThread is None:
+            # PySide6 不可用，回退到 tkinter
+            from web_backend.region import select_region_tkinter
+            return select_region_tkinter(mode)
+
         if self._QThread.currentThread() == self._app.thread():
             return self._select_region_on_main(mode)
 
@@ -250,6 +263,7 @@ def main():
             app = QApplication(sys.argv)
     except Exception as e:
         print(f"Warning: QApplication init: {e}")
+        app = None
     
     base_dir = os.path.dirname(os.path.abspath(__file__))
     html_path = os.path.join(base_dir, 'webui', 'index.html')

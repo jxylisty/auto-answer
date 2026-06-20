@@ -8,3 +8,11 @@ web_collected_questions/
 last_capture_debug.png
 number_region_debug.png
 *.pyc
+
+# 临时测试文件
+captures/
+debug.log
+*.log
+抓取网页.py
+测试用.html
+DESIGHN.md

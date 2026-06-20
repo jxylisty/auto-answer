@@ -1,4 +1,4 @@
-﻿const AppState = {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const AppState = {
     currentStep: 1,
     questionRegion: { selected: false },
     numberRegion: { selected: false },
@@ -223,21 +223,23 @@ function initAnswerList() {
     
     container.innerHTML = '';
     
-    for (let i = 1; i <= 45; i++) {
-        let displayNo;
-        if (i <= 20) {
-            displayNo = String(i);
-        } else if (i <= 35) {
-            displayNo = `二-${i-20}`;
-        } else {
-            displayNo = `三-${i-35}`;
-        }
+    // 根据实际采集的题目数量动态生成
+    const questions = AppState.questions || [];
+    if (questions.length === 0) {
+        container.innerHTML = '<div class="empty-text">请先采集题目</div>';
+        return;
+    }
+    
+    for (let i = 1; i <= questions.length; i++) {
+        const q = questions[i-1];
+        const displayNo = q.display_no || String(i);
+        const qtype = q.type || 'single';
         
         const row = document.createElement('div');
         row.className = 'answer-row';
         row.innerHTML = `
             <span class="answer-no">${displayNo}</span>
-            <input type="text" class="answer-input" data-no="${i}" placeholder="输入答案 (如 A, BC, 正确)" />
+            <input type="text" class="answer-input" data-no="${i}" data-type="${qtype}" placeholder="输入答案 (如 A, BC, 正确)" />
         `;
         container.appendChild(row);
     }
@@ -370,6 +372,7 @@ async function confirmCapture() {
                 `(${selectResult.region.left}, ${selectResult.region.top}) - ${selectResult.region.width}x${selectResult.region.height}`;
             document.getElementById('questionRegionStatus').classList.add('status-success');
             addLog(`题目区域已选择: ${selectResult.region.width}x${selectResult.region.height}`, 'success');
+            renderState();
         } else if (CaptureState.mode === 'number_region') {
             AppState.numberRegion = {
                 selected: true,
@@ -379,6 +382,7 @@ async function confirmCapture() {
                 `(${selectResult.region.left}, ${selectResult.region.top}) - ${selectResult.region.width}x${selectResult.region.height}`;
             document.getElementById('numberRegionStatus').classList.add('status-success');
             addLog(`题号区域已选择: ${selectResult.region.width}x${selectResult.region.height}`, 'success');
+            renderState();
         }
     } catch (e) {
         addLog(`处理异常: ${e.message}`, 'error');
@@ -489,14 +493,26 @@ document.addEventListener('DOMContentLoaded', function() {
 
 async function captureOCR() {
     addLog('点击: 截图识别', 'info');
-    
+
+    // 显示进度条
+    updateProgressBar('singleOcrProgress', 'singleOcrProgressFill', 'singleOcrProgressText', 0, 1, '正在截取屏幕...');
+
+    // 启动轮询
+    const ocrTimer = startPollingOperation(
+        'single_ocr',
+        'singleOcrProgress',
+        'singleOcrProgressFill',
+        'singleOcrProgressText',
+        () => window.pywebview.api.get_operation_status()
+    );
+
     try {
         const backend = document.getElementById('ocrBackend')?.value || 'auto';
         const result = await window.pywebview.api.capture_ocr_with_tkinter(backend);
-        
+
         if (result.success) {
             document.getElementById('ocrResultText').value = result.text || '';
-            
+
             if (result.image_data_url) {
                 const previewImg = document.getElementById('screenshotPreviewImg');
                 const placeholder = document.getElementById('screenshotPlaceholder');
@@ -508,7 +524,7 @@ async function captureOCR() {
                     placeholder.style.display = 'none';
                 }
             }
-            
+
             AppState.questionRegion = {
                 selected: true,
                 x: result.region.left,
@@ -521,7 +537,7 @@ async function captureOCR() {
                 statusEl.textContent = `(${result.region.left}, ${result.region.top}) - ${result.region.width}x${result.region.height}`;
                 statusEl.classList.add('status-success');
             }
-            
+
             addLog(`OCR识别完成 (${result.backend || backend}), 耗时: ${result.elapsed}s`, 'success');
         } else {
             addLog(`OCR识别失败: ${result.error}`, 'error');
@@ -529,15 +545,30 @@ async function captureOCR() {
     } catch (e) {
         addLog(`截图异常: ${e.message}`, 'error');
     }
+
+    clearInterval(ocrTimer);
+    hideProgressBar('singleOcrProgress');
 }
 
 async function fixedRegionOCR() {
     addLog('点击: 固定区域识别', 'info');
-    
+
+    // 显示进度条
+    updateProgressBar('singleOcrProgress', 'singleOcrProgressFill', 'singleOcrProgressText', 0, 1, '正在识别固定区域...');
+
+    // 启动轮询
+    const ocrTimer = startPollingOperation(
+        'single_ocr',
+        'singleOcrProgress',
+        'singleOcrProgressFill',
+        'singleOcrProgressText',
+        () => window.pywebview.api.get_operation_status()
+    );
+
     try {
         const backend = document.getElementById('ocrBackend')?.value || 'auto';
         const result = await window.pywebview.api.recognize_fixed_region(backend);
-        
+
         if (result.success) {
             document.getElementById('ocrResultText').value = result.text || '';
             addLog(`固定区域OCR完成 (${result.backend || backend}), 耗时: ${result.elapsed}s`, 'success');
@@ -547,6 +578,9 @@ async function fixedRegionOCR() {
     } catch (e) {
         addLog(`OCR识别异常: ${e.message}`, 'error');
     }
+
+    clearInterval(ocrTimer);
+    hideProgressBar('singleOcrProgress');
 }
 
 function toggleAdvancedSettings() {
@@ -613,6 +647,7 @@ async function selectQuestionRegion() {
                 statusEl.classList.add('status-success');
             }
             addLog(`题目区域已选择: ${result.region.width}x${result.region.height}`, 'success');
+            renderState();
         } else {
             addLog(`选择失败: ${result.error}`, 'error');
         }
@@ -638,6 +673,7 @@ async function selectNumberRegion() {
                 statusEl.classList.add('status-success');
             }
             addLog(`题号区域已选择: ${result.region.width}x${result.region.height}`, 'success');
+            renderState();
         } else {
             addLog(`选择失败: ${result.error}`, 'error');
         }
@@ -893,18 +929,30 @@ async function stopCollection() {
 
 async function parseCollectedOptions() {
     addLog('点击: 解析选项', 'info');
-    
+
+    // 显示进度条
+    updateProgressBar('optionParseProgress', 'optionParseProgressFill', 'optionParseProgressText', 0, 1, '正在初始化解析引擎...');
+
+    // 启动轮询
+    const parseTimer = startPollingOperation(
+        'parse_collected_options',
+        'optionParseProgress',
+        'optionParseProgressFill',
+        'optionParseProgressText',
+        () => window.pywebview.api.get_operation_status()
+    );
+
     const textOcrBackend = document.getElementById('textOcrBackend')?.value || 'auto';
     const optionOcrBackend = document.getElementById('optionOcrBackend')?.value || 'auto';
-    
+
     try {
         const options = {
             text_ocr_backend: textOcrBackend,
             option_ocr_backend: optionOcrBackend
         };
-        
+
         const result = await window.pywebview.api.parse_collected_options(options);
-        
+
         if (result.success) {
             renderCollectionResultsTable(result.records || []);
             addLog(result.message, 'success');
@@ -914,6 +962,9 @@ async function parseCollectedOptions() {
     } catch (e) {
         addLog(`解析异常: ${e.message}`, 'error');
     }
+
+    clearInterval(parseTimer);
+    hideProgressBar('optionParseProgress');
 }
 
 async function collectQuestions() {
@@ -928,38 +979,11 @@ async function collectQuestions() {
             AppState.numberCoordsCount = result.count || 0;
             
             renderQuestionTable(result.questions);
+            initAnswerList();  // 采集完成后根据实际题目重新生成答案列表
             addLog(`采集完成: ${result.count}题`, 'success');
         }
     } catch (e) {
-        const mockQuestions = [];
-        for (let i = 1; i <= 45; i++) {
-            let qtype, displayNo;
-            if (i <= 20) {
-                qtype = 'single';
-                displayNo = String(i);
-            } else if (i <= 35) {
-                qtype = 'multi';
-                displayNo = `二-${i-20}`;
-            } else {
-                qtype = 'true_false';
-                displayNo = `三-${i-35}`;
-            }
-            mockQuestions.push({
-                id: i,
-                display_no: displayNo,
-                type: qtype,
-                x: 100 + (i % 5) * 150,
-                y: 200 + Math.floor(i / 5) * 80,
-                has_text: true
-            });
-        }
-        
-        AppState.questions = mockQuestions;
-        AppState.collectedQuestions = 45;
-        AppState.numberCoordsCount = 45;
-        
-        renderQuestionTable(mockQuestions);
-        addLog('采集完成: 45题 (Mock)', 'success');
+        addLog(`采集异常: ${e.message}`, 'error');
     }
     
     renderState();
@@ -1431,9 +1455,15 @@ function renderAnswerClickTable(tasks) {
 }
 
 async function executeAllAnswers() {
-    addLog('点击: 执行全部答案', 'info');
-    showAnswerClickProgress(true);
-    updateAnswerClickProgress(0, Math.max(1, AppState.answers?.length || 1), '正在执行答案');
+    addLog('点击: 自动批量答题', 'info');
+
+    const clickDelay = parseFloat(document.getElementById('clickDelay').value) || 0.15;
+    const clickInterval = parseFloat(document.getElementById('clickInterval').value) || 0.15;
+    const clickMode = document.getElementById('clickModeSelect').value; // 动态获取引擎模式
+
+    showProgressBar('answerClickProgress');
+    updateAnswerClickProgress(0, 100, '准备执行');
+
     const executeTimer = startPollingOperation(
         'execute',
         'answerClickProgress',
@@ -1441,23 +1471,28 @@ async function executeAllAnswers() {
         'answerClickProgressText',
         () => window.pywebview.api.get_execution_status()
     );
-    const testMode = document.getElementById('chkAnswerTestMode')?.checked || false;
-    
+
     try {
-        const result = await window.pywebview.api.execute_all_answers({
-            test_mode: testMode,
-            click_delay: 0.15,
-            interval: 0.15
+        // 将 click_mode 作为 options 的一个参数完整发送给后端
+        const res = await window.pywebview.api.execute_all_answers({
+            test_mode: false,
+            click_mode: clickMode,
+            click_delay: clickDelay,
+            interval: clickInterval
         });
-        
-        if (result.success) {
-            addLog(result.message || '全部答案执行完成', 'success');
+
+        if (res && res.success) {
+            addLog(`执行完成: ${res.message}`, 'success');
+            showToast(res.message);
         } else {
-            addLog(`执行失败: ${result.error}`, 'error');
+            addLog(`执行失败: ${res ? res.error : '未知错误'}`, 'error');
+            showToast(res ? res.error : '未知错误', true);
         }
     } catch (e) {
         addLog(`执行异常: ${e.message}`, 'error');
+        showToast(e.message, true);
     }
+
     clearInterval(executeTimer);
     hideProgressBar('answerClickProgress');
 }

@@ -18,9 +18,19 @@ LETTER_INDEX = {"A": 0, "B": 1, "C": 2, "D": 3}
 BOOLEAN_TRUE_LABELS = {"TRUE", "T", "正确", "对"}
 BOOLEAN_FALSE_LABELS = {"FALSE", "F", "错误", "错"}
 
+# 噪声文本模式，在匹配前清洗
+NOISE_PATTERNS = [
+    "拼命加载中...", "拼命加载中..", "拼命加载中.",
+    "加载中...", "加载中..",
+    "loading...",
+]
+
 
 def _normalize_text(text: str) -> str:
-    return unicodedata.normalize("NFKC", text or "").strip()
+    text = unicodedata.normalize("NFKC", text or "").strip()
+    for pattern in NOISE_PATTERNS:
+        text = text.replace(pattern, "")
+    return text.strip()
 
 
 def _normalize_option_label(label: str) -> str:
@@ -337,6 +347,7 @@ def extract_options_from_question_image(
     print(f"按 y 坐标分行，共 {len(rows)} 行")
 
     options: dict[str, dict] = {}
+    unmatched_rows: list[tuple[int, list[dict]]] = []  # (row_index, row_boxes) 未匹配到选项标记的行
     for row_index, row_boxes in enumerate(rows):
         row_text = " ".join(box["text"] for box in sorted(row_boxes, key=lambda b: b["local_x"]))
         print(f"  第 {row_index + 1} 行: {row_text!r}")
@@ -346,12 +357,53 @@ def extract_options_from_question_image(
             region_top,
             image.width,
         )
-        for label, option_info in row_options.items():
-            if (
-                label not in options
-                or option_info.get("screen_y", 0) >= options[label].get("screen_y", 0)
-            ):
-                options[label] = option_info
+        if row_options:
+            for label, option_info in row_options.items():
+                if (
+                    label not in options
+                    or option_info.get("screen_y", 0) >= options[label].get("screen_y", 0)
+                ):
+                    options[label] = option_info
+        else:
+            # 该行没有匹配到 A/B/C/D 标记，记录下来后续推断
+            if row_text.strip() and not QUESTION_NUMBER_PATTERN.search(row_text):
+                unmatched_rows.append((row_index, row_boxes))
+
+    # 已有部分选项（如 A、B）但不足 4 个时，用未匹配行补全 C/D
+    matched_labels = [l for l in ("A", "B", "C", "D") if l in options]
+    if 1 <= len(matched_labels) < 4 and unmatched_rows:
+        for row_idx, row_boxes in unmatched_rows:
+            if len(matched_labels) >= 4:
+                break
+            # 找下一个缺失的标签
+            next_label = None
+            for candidate in ["A", "B", "C", "D"]:
+                if candidate not in matched_labels:
+                    next_label = candidate
+                    break
+            if not next_label:
+                break
+
+            row_sorted = sorted(row_boxes, key=lambda b: b["local_x"])
+            avg_y = sum(b["local_y"] for b in row_sorted) / len(row_sorted)
+            center_x = sum(b["local_x"] for b in row_sorted) / len(row_sorted)
+            row_text = " ".join(b["text"] for b in row_sorted)
+
+            options[next_label] = _build_option_info(
+                label=next_label,
+                text=row_text,
+                local_x=center_x,
+                local_y=avg_y,
+                width=max(b.get("width", 60) for b in row_sorted),
+                height=max(b.get("height", 20) for b in row_sorted),
+                region_left=region_left,
+                region_top=region_top,
+                image_width=image.width,
+                score=sum(b.get("score", 0.5) for b in row_sorted) / len(row_sorted),
+                backend=row_sorted[0]["backend"] + "-inferred",
+            )
+            matched_labels.append(next_label)
+            print(f"    推断选项 {next_label}: {row_text!r}")
 
     if len(options) < 2:
         fallback_options = _infer_options_by_rows(

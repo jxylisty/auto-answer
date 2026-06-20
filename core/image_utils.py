@@ -1,4 +1,4 @@
-from PIL import Image
+from PIL import Image, ImageOps
 from PySide6.QtGui import QImage, QPixmap
 
 
@@ -14,18 +14,18 @@ def pil_image_to_pixmap(image: Image.Image) -> QPixmap:
 
 
 def prepare_image_for_ocr(image: Image.Image) -> Image.Image:
-    """Shrink large images before OCR to reduce inference time."""
+    """
+    OCR 图像预处理：只缩放大图，不做其他处理。
+    RapidOCR/PaddleOCR 引擎内部已有完善的预处理流水线，
+    额外的灰度化/CLAHE/反转等操作反而会降低识别率。
+    """
     max_width = 480
     max_height = 360
     width, height = image.size
-    print(f"prepare_image_for_ocr before={width}x{height}")
 
     if width <= max_width and height <= max_height:
-        print(f"prepare_image_for_ocr after={width}x{height}")
         return image
 
     scale = min(max_width / width, max_height / height)
     new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
-    resized = image.resize(new_size, Image.Resampling.BILINEAR)
-    print(f"prepare_image_for_ocr after={resized.size[0]}x{resized.size[1]}")
-    return resized
+    return image.resize(new_size, Image.Resampling.BILINEAR)

@@ -38,6 +38,39 @@ class RapidOcrBackend(BaseOcrBackend):
             return ""
         return "\n".join(line[1] for line in result if len(line) >= 2)
 
+    def recognize_with_boxes(self, image: Image.Image) -> tuple[str, list]:
+        engine = self._get_engine()
+        image_np = np.array(image)
+        try:
+            result, _ = engine(image_np, use_cls=False)
+        except TypeError:
+            result, _ = engine(image_np)
+        if not result:
+            return "", []
+        boxes = []
+        lines = []
+        for line in result:
+            if len(line) >= 2:
+                text = str(line[1])
+                lines.append(text)
+                coords = line[0] if len(line) >= 1 and line[0] else []
+                if coords and len(coords) >= 2:
+                    xs = [c[0] for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2]
+                    ys = [c[1] for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2]
+                    if xs and ys:
+                        cx = sum(xs) / len(xs)
+                        cy = sum(ys) / len(ys)
+                        boxes.append({
+                            "text": text,
+                            "center_x": cx,
+                            "center_y": cy,
+                            "x": min(xs),
+                            "y": min(ys),
+                            "width": max(xs) - min(xs),
+                            "height": max(ys) - min(ys),
+                        })
+        return "\n".join(lines), boxes
+
 
 class RapidOpenVinoOcrBackend(BaseOcrBackend):
     name = "rapidocr-openvino"
@@ -62,6 +95,39 @@ class RapidOpenVinoOcrBackend(BaseOcrBackend):
         if not result:
             return ""
         return "\n".join(line[1] for line in result if len(line) >= 2)
+
+    def recognize_with_boxes(self, image: Image.Image) -> tuple[str, list]:
+        engine = self._get_engine()
+        image_np = np.array(image)
+        try:
+            result, _ = engine(image_np, use_cls=False)
+        except TypeError:
+            result, _ = engine(image_np)
+        if not result:
+            return "", []
+        boxes = []
+        lines = []
+        for line in result:
+            if len(line) >= 2:
+                text = str(line[1])
+                lines.append(text)
+                coords = line[0] if len(line) >= 1 and line[0] else []
+                if coords and len(coords) >= 2:
+                    xs = [c[0] for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2]
+                    ys = [c[1] for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2]
+                    if xs and ys:
+                        cx = sum(xs) / len(xs)
+                        cy = sum(ys) / len(ys)
+                        boxes.append({
+                            "text": text,
+                            "center_x": cx,
+                            "center_y": cy,
+                            "x": min(xs),
+                            "y": min(ys),
+                            "width": max(xs) - min(xs),
+                            "height": max(ys) - min(ys),
+                        })
+        return "\n".join(lines), boxes
 
 
 class PaddleOcrBackend(BaseOcrBackend):
@@ -99,6 +165,50 @@ class PaddleOcrBackend(BaseOcrBackend):
             else:
                 texts.append(str(rec))
         return "\n".join(text for text in texts if text)
+
+    def recognize_with_boxes(self, image: Image.Image) -> tuple[str, list]:
+        engine = self._get_engine()
+        image_np = np.array(image)
+        try:
+            result = engine.ocr(image_np, cls=False)
+        except TypeError:
+            result = engine.ocr(image_np)
+        if not result:
+            return "", []
+        lines = result[0] if isinstance(result, list) else result
+        if not lines:
+            return "", []
+        boxes = []
+        texts = []
+        for line in lines:
+            if not line or len(line) < 2:
+                continue
+            rec = line[1]
+            if isinstance(rec, (list, tuple)) and rec:
+                text = str(rec[0])
+                score = float(rec[1]) if len(rec) > 1 else 1.0
+            else:
+                text = str(rec)
+                score = 1.0
+            texts.append(text)
+            coords = line[0] if len(line) >= 1 and line[0] else []
+            if coords and len(coords) >= 2:
+                xs = [c[0] for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2]
+                ys = [c[1] for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2]
+                if xs and ys:
+                    cx = sum(xs) / len(xs)
+                    cy = sum(ys) / len(ys)
+                    boxes.append({
+                        "text": text,
+                        "center_x": cx,
+                        "center_y": cy,
+                        "x": min(xs),
+                        "y": min(ys),
+                        "width": max(xs) - min(xs),
+                        "height": max(ys) - min(ys),
+                        "score": score,
+                    })
+        return "\n".join(texts), boxes
 
 
 class WindowsOcrBackend(BaseOcrBackend):
@@ -242,13 +352,61 @@ def get_ocr_backend(backend_name: str = "auto") -> BaseOcrBackend:
     raise RuntimeError("No text OCR backend available: " + " | ".join(errors))
 
 
-def recognize_image(image: Image.Image, backend_name: str = "auto") -> str:
+def recognize_image(image: Image.Image, backend_name: str = "auto") -> tuple[str, str]:
+    """识别文字，返回 (text, actual_backend)"""
     errors: list[str] = []
     for candidate in _get_text_backend_candidates(backend_name):
         try:
             backend = get_ocr_backend(candidate)
             print(f"OCR backend: {backend.name}")
-            return backend.recognize(image)
+            return backend.recognize(image), backend.name
+        except Exception as exc:
+            error_text = f"{candidate}: {repr(exc)}"
+            errors.append(error_text)
+            if candidate == "windows-ocr":
+                print(f"Windows OCR failed, fallback continues: {repr(exc)}")
+            else:
+                print(f"OCR backend failed: {error_text}")
+            if backend_name != "auto":
+                raise RuntimeError(error_text) from exc
+
+    raise RuntimeError("All OCR backends failed: " + " | ".join(errors))
+
+
+def recognize_image_with_boxes(image: Image.Image, backend_name: str = "auto") -> tuple[str, str, list]:
+    """识别文字并返回文本块坐标，返回 (text, actual_backend, boxes)"""
+    errors: list[str] = []
+    for candidate in _get_text_backend_candidates(backend_name):
+        try:
+            backend = get_ocr_backend(candidate)
+            print(f"OCR backend: {backend.name}")
+
+            # 尝试获取带坐标的结果
+            boxes = []
+            if hasattr(backend, 'recognize_with_boxes'):
+                text, boxes = backend.recognize_with_boxes(image)
+            elif hasattr(backend, '_recognize_result'):
+                # Windows OCR 特有方式
+                result = backend._recognize_result(image)
+                text = result.text or ""
+                # 尝试提取坐标
+                if hasattr(result, 'lines'):
+                    for line in result.lines or []:
+                        if hasattr(line, 'words'):
+                            for word in line.words or []:
+                                if hasattr(word, 'bounding_rect') and hasattr(word, 'text'):
+                                    rect = word.bounding_rect
+                                    boxes.append({
+                                        "text": word.text,
+                                        "x": int(rect.x),
+                                        "y": int(rect.y),
+                                        "width": int(rect.width),
+                                        "height": int(rect.height),
+                                    })
+            else:
+                text = backend.recognize(image)
+
+            return text, backend.name, boxes
         except Exception as exc:
             error_text = f"{candidate}: {repr(exc)}"
             errors.append(error_text)
