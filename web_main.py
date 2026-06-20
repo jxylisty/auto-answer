@@ -129,6 +129,32 @@ class Api:
         from api_bridge import execute_clicks
         return execute_clicks(plan)
 
+    # ================= 补充手动录入与快捷键 API =================
+
+    def start_hotkey_listener(self):
+        from api_bridge import start_hotkey_listener
+        return start_hotkey_listener()
+
+    def check_hotkey_result(self):
+        from api_bridge import check_hotkey_result
+        return check_hotkey_result()
+
+    def cancel_hotkey_listener(self):
+        from api_bridge import cancel_hotkey_listener
+        return cancel_hotkey_listener()
+
+    def add_or_update_question_point(self, point_data: dict):
+        from api_bridge import add_or_update_question_point
+        return add_or_update_question_point(point_data)
+
+    def delete_question_point(self, no: int):
+        from api_bridge import delete_question_point
+        return delete_question_point(no)
+
+    def trigger_infer_missing_points(self):
+        """触发智能网格推断（独立API，用户手动触发）"""
+        from api_bridge import trigger_infer_missing_points
+        return trigger_infer_missing_points()
 
 class SelectionController:
     def __init__(self, app, window):

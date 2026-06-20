@@ -28,6 +28,8 @@ from web_backend import (
     get_collection_status,
     stop_collection,
     parse_collected_options,
+    # 智能网格推断（独立API，用户手动触发）
+    trigger_infer_missing_points,
     # 手动校准题号坐标
     get_mouse_position,
     # 非阻塞快捷键监听
@@ -102,7 +104,7 @@ def collect_questions():
             "message": "未选择题号区域"
         }
 
-    detect_result = detect_question_points({"backend": "auto"})
+    detect_result = detect_question_points("auto")
     if not detect_result.get("success"):
         return {
             "success": False,

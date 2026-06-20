@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const AppState = {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const AppState = {
     currentStep: 1,
     questionRegion: { selected: false },
     numberRegion: { selected: false },
@@ -196,6 +196,7 @@ function initEventListeners() {
     document.getElementById('btnSaveNumberCapture')?.addEventListener('click', saveNumberCapture);
     document.getElementById('btnDetectQuestions')?.addEventListener('click', detectQuestionPoints);
     document.getElementById('btnManualEditPoint')?.addEventListener('click', openPointModal);
+    document.getElementById('btnInferPoints')?.addEventListener('click', triggerInferMissingPoints);
     document.getElementById('btnStartCollection')?.addEventListener('click', startCollection);
     document.getElementById('btnStopCollection')?.addEventListener('click', stopCollection);
     document.getElementById('btnParseOptions')?.addEventListener('click', parseCollectedOptions);
@@ -1546,6 +1547,54 @@ function showToast(message, isError = false) {
 // ==================== 手动编辑题号坐标功能 ====================
 
 let mouseCountdownTimer = null;
+
+/**
+ * 触发智能网格推断（独立API，用户手动触发）
+ */
+async function triggerInferMissingPoints() {
+    const btn = document.getElementById('btnInferPoints');
+
+    // 禁用按钮，防止重复点击
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = '⏳ 正在进行网格推断...';
+
+    addLog('开始执行智能网格推断...', 'info');
+
+    try {
+        // 调用后端API
+        const result = await window.pywebview.api.trigger_infer_missing_points();
+
+        if (result.success) {
+            // 推断成功
+            showToast(result.message, false);
+            addLog(result.message, 'success');
+            addLog(`推断详情：原始 ${result.original_count} 个点 → 最终 ${result.total_count} 个点（新增 ${result.inferred_count} 个，分为 ${result.sections} 个段落）`, 'info');
+
+            // 用返回的数据重新渲染表格
+            AppState.questionPoints = result.points || [];
+            AppState.numberCoordsCount = result.total_count || 0;
+            renderQuestionPointsTable(result.points);
+            renderState();
+
+            // 更新统计信息
+            document.getElementById('detectedCount').textContent = `${result.total_count} 个`;
+        } else {
+            // 推断失败
+            showToast(result.error || '网格推断失败', true);
+            addLog(`推断失败: ${result.error}`, 'error');
+        }
+    } catch (e) {
+        // 异常处理
+        showToast(`网格推断异常: ${e}`, true);
+        addLog(`推断异常: ${e}`, 'error');
+        console.error('triggerInferMissingPoints error:', e);
+    } finally {
+        // 恢复按钮状态
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
 
 /**
  * 打开手动编辑模态框

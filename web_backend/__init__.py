@@ -47,6 +47,8 @@ from .collection import (
     get_collection_status,
     stop_collection,
     parse_collected_options,
+    # 智能网格推断（独立API，用户手动触发）
+    trigger_infer_missing_points,
     # 手动校准题号坐标
     get_mouse_position,
     # 非阻塞快捷键监听
@@ -115,6 +117,8 @@ __all__ = [
     "get_collection_status",
     "stop_collection",
     "parse_collected_options",
+    # 智能网格推断（独立API，用户手动触发）
+    "trigger_infer_missing_points",
     # 手动校准题号坐标
     "get_mouse_position",
     # 非阻塞快捷键监听

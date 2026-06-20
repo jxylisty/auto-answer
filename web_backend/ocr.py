@@ -13,6 +13,7 @@ from typing import Dict, List
 
 from .core import (
     _last_capture_path,
+    _hide_webview_window,
     _restore_webview_window,
     _set_operation_state,
     _update_operation_state,

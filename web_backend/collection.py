@@ -173,12 +173,11 @@ def detect_question_points(backend_name: str = "auto") -> Dict:
             for row in rows:
                 points.extend(row)
 
-        # 推断缺失题号
-        expected_count = _detect_expected_question_count_from_boxes(boxes)
-        if expected_count and len(points) < expected_count:
-            inferred_points = _infer_question_points(points, expected_count)
-            if inferred_points:
-                points = inferred_points
+        # 推断缺失题号（已移至独立API trigger_infer_missing_points，用户手动触发）
+        # expected_count = _detect_expected_question_count_from_boxes(boxes)
+        # inferred_points = _infer_question_points(points, expected_count)
+        # if inferred_points:
+        #     points = inferred_points
 
         # 【核心改进2：题号前缀智能推断（处理不同题型题号重置问题）】
         section_idx = 1
@@ -255,7 +254,7 @@ def _detect_expected_question_count_from_boxes(boxes: list) -> int | None:
 
 
 def _infer_question_points(points: list, expected_count: int = None) -> list | None:
-    """基于网格数学模型的智能分段坐标推断（完美解决题号重置、中间漏题、头尾漏题）"""
+    """基于网格数学模型的智能分段坐标推断（包含防暴走与空间越界保护）"""
     if not points:
         return points
 
@@ -264,7 +263,13 @@ def _infer_question_points(points: list, expected_count: int = None) -> list | N
     if len(sorted_points) < 2:
         return sorted_points
 
-    # 2. 计算全局网格几何参数 (间距和列数通常是全局一致的，哪怕跨题型)
+    # --- 【新增核心】：计算截图的物理空间边界 ---
+    min_y = min(p.get("y", 0) for p in sorted_points)
+    max_y = max(p.get("y", 0) for p in sorted_points)
+    min_x = min(p.get("x", 0) for p in sorted_points)
+    max_x = max(p.get("x", 0) for p in sorted_points)
+
+    # 2. 计算全局网格几何参数
     row_groups = []
     current_row = [sorted_points[0]]
     last_y = sorted_points[0].get("y", 0)
@@ -287,38 +292,65 @@ def _infer_question_points(points: list, expected_count: int = None) -> list | N
         if len(row) >= 2:
             row_x = sorted(p.get("x", 0) for p in row)
             x_diffs.extend([row_x[i+1] - row_x[i] for i in range(len(row_x)-1)])
-    avg_x_diff = sum(x_diffs) / len(x_diffs) if x_diffs else 0
+    avg_x_diff = sum(x_diffs) / len(x_diffs) if x_diffs else 100  # 兜底间距
 
     y_diffs = []
     if len(row_groups) >= 2:
         row_ys = [sum(p.get("y", 0) for p in row) / len(row) for row in row_groups]
         y_diffs = [row_ys[i+1] - row_ys[i] for i in range(len(row_ys)-1)]
-    avg_y_diff = sum(y_diffs) / len(y_diffs) if y_diffs else 0
+    avg_y_diff = sum(y_diffs) / len(y_diffs) if y_diffs else 50   # 兜底间距
 
     if avg_x_diff == 0 and avg_y_diff == 0:
         return sorted_points
 
-    # 3. 智能分段：如果识别到的数字变小，说明进入了新题型/新部分
+    # --- 【新增核心】：设置严格的空间安全视口（允许外扩半个到一个题的间距） ---
+    safe_top = min_y - avg_y_diff * 0.8
+    safe_bottom = max_y + avg_y_diff * 1.5
+    safe_left = min_x - avg_x_diff * 1.5
+    safe_right = max_x + avg_x_diff * 1.5
+
+    # 3. 智能分段与严格的序列清洗（彻底解决满屏噪点）
     sections = []
     current_section = [sorted_points[0]]
-    last_no = sorted_points[0].get("no", 0)
+    last_valid_no = sorted_points[0].get("no", 0)
+
+    # 动态允许的最大跨度（列数越多，允许跳过的题号越多）
+    max_allowed_jump = max(5, columns * 2 + 3)
 
     for p in sorted_points[1:]:
-        current_no = p.get("no", 0)
-        if current_no <= last_no:
-            # 题号不升反降，说明题号重置了，开辟新段落
-            sections.append(current_section)
-            current_section = [p]
+        curr_no = p.get("no", 0)
+
+        if curr_no > last_valid_no:
+            # 正常递增，但要拦截离谱的跳跃（如 2 后面跟着 288）
+            if curr_no - last_valid_no <= max_allowed_jump:
+                current_section.append(p)
+                last_valid_no = curr_no
+            else:
+                continue # 暴增直接抛弃
         else:
-            current_section.append(p)
-        last_no = current_no
+            # 题号变小：极其严格的新段落判定
+            # 只有当新题号 <= 5 时，才认定这是卷子真正的“第二部分”
+            if curr_no <= 5:
+                sections.append(current_section)
+                current_section = [p]
+                last_valid_no = curr_no
+            else:
+                continue # 随意掉落的乱码数字，直接抛弃
+
     if current_section:
         sections.append(current_section)
 
-    # 4. 对每个分段进行独立推断填补
+    # 过滤掉孤立且离谱的噪点段落
+    valid_sections = []
+    for sec in sections:
+        if len(sec) == 1 and sec[0].get("no", 0) > 10:
+            continue
+        valid_sections.append(sec)
+    sections = valid_sections
+
+    # 4. 独立推断填补，并施加【空间越界防护】
     final_points = []
     for sec_idx, sec_points in enumerate(sections):
-        # 以该段识别到的第一个点作为"相对坐标基准点"
         base_point = sec_points[0]
         base_no = base_point.get("no", 1)
         base_x = base_point.get("x", 0)
@@ -327,16 +359,14 @@ def _infer_question_points(points: list, expected_count: int = None) -> list | N
         base_row = (base_no - 1) // columns
         base_col = (base_no - 1) % columns
 
-        # 确定该段的推断终点
         max_no_in_sec = sec_points[-1].get("no", 1)
-        # 如果是最后一段，且传入了全局预期总数，可以尝试向后延伸补齐
         if sec_idx == len(sections) - 1 and expected_count and expected_count > max_no_in_sec:
-            max_no_in_sec = expected_count
+            if expected_count - max_no_in_sec <= max_allowed_jump:
+                max_no_in_sec = expected_count
 
-        # 提取该段已有的所有题号，方便快速比对
         existing_nos = {p.get("no"): p for p in sec_points}
 
-        # 遍历 1 到 该段最大题号，如果缺失就用数学网格算出来
+        # 尝试推算，但用物理坐标进行无情拦截
         for target_no in range(1, max_no_in_sec + 1):
             if target_no in existing_nos:
                 final_points.append(existing_nos[target_no])
@@ -344,9 +374,12 @@ def _infer_question_points(points: list, expected_count: int = None) -> list | N
                 target_row = (target_no - 1) // columns
                 target_col = (target_no - 1) % columns
 
-                # 相对于 base_point 计算 X 和 Y 的偏移
                 calc_x = int(round(base_x + (target_col - base_col) * avg_x_diff))
                 calc_y = int(round(base_y + (target_row - base_row) * avg_y_diff))
+
+                # 【终极防守】：算出来的点如果不在这张图的物理范围内，立刻扔掉！
+                if calc_y < safe_top or calc_y > safe_bottom or calc_x < safe_left or calc_x > safe_right:
+                    continue
 
                 final_points.append({
                     "no": target_no,
@@ -1014,3 +1047,197 @@ def _recalculate_point_metadata(points: List[Dict]) -> List[Dict]:
         last_no = no
 
     return sorted_points
+
+
+def trigger_infer_missing_points() -> Dict:
+    """
+    触发智能网格推断（独立API，用户手动触发）
+    
+    功能：
+    - 读取当前已识别的题号点
+    - 进行严格二维容差排序
+    - 智能分段检测（题号重置时自动切分）
+    - 对每段执行网格推断补齐缺失题号
+    - 保存结果并返回
+    
+    Returns:
+        Dict: {
+            "success": bool,
+            "message": str,
+            "inferred_count": int,  # 新增推断的点数
+            "total_count": int,     # 总点数
+            "points": list          # 更新后的点列表
+        }
+    """
+    try:
+        # 1. 获取当前已识别的点
+        current_points = get_detected_question_points()
+        if not current_points:
+            return {
+                "success": False,
+                "error": "没有已识别的题号点，请先进行OCR识别",
+                "inferred_count": 0,
+                "total_count": 0,
+                "points": []
+            }
+
+        print(f"[网格推断] 开始处理 {len(current_points)} 个已识别点...")
+
+        # 2. 严格二维容差排序（Y轴30px分行，行内X排序）
+        sorted_points = sorted(current_points, key=lambda item: (item.get("y", 0), item.get("x", 0)))
+
+        row_groups = []
+        current_row = [sorted_points[0]]
+        last_y = sorted_points[0].get("y", 0)
+
+        for point in sorted_points[1:]:
+            if abs(point.get("y", 0) - last_y) <= 30:  # Y轴容差30px
+                current_row.append(point)
+            else:
+                # 行内按X坐标排序
+                current_row.sort(key=lambda p: p.get("x", 0))
+                row_groups.append(current_row)
+                current_row = [point]
+            last_y = point.get("y", 0)
+
+        if current_row:
+            current_row.sort(key=lambda p: p.get("x", 0))
+            row_groups.append(current_row)
+
+        print(f"[网格推断] 排序完成：{len(row_groups)} 行")
+
+        # 3. 计算全局网格参数
+        columns = max(len(row) for row in row_groups) if row_groups else 1
+        if columns < 1:
+            columns = 1
+
+        x_diffs = []
+        for row in row_groups:
+            if len(row) >= 2:
+                row_x = [p.get("x", 0) for p in row]
+                x_diffs.extend([row_x[i+1] - row_x[i] for i in range(len(row_x)-1)])
+        avg_x_diff = sum(x_diffs) / len(x_diffs) if x_diffs else 0
+
+        y_diffs = []
+        if len(row_groups) >= 2:
+            row_ys = [sum(p.get("y", 0) for p in row) / len(row) for row in row_groups]
+            y_diffs = [row_ys[i+1] - row_ys[i] for i in range(len(row_ys)-1)]
+        avg_y_diff = sum(y_diffs) / len(y_diffs) if y_diffs else 0
+
+        print(f"[网格推断] 网格参数: columns={columns}, avg_x={avg_x_diff:.1f}, avg_y={avg_y_diff:.1f}")
+
+        if avg_x_diff == 0 and avg_y_diff == 0:
+            return {
+                "success": False,
+                "error": "无法计算网格间距，点数不足或分布异常",
+                "inferred_count": 0,
+                "total_count": len(current_points),
+                "points": current_points
+            }
+
+        # 4. 智能分段检测（题号重置时切分）
+        sections = []
+        current_section = [sorted_points[0]]
+        last_no = sorted_points[0].get("no", 0)
+
+        for p in sorted_points[1:]:
+            current_no = p.get("no", 0)
+            if current_no <= last_no:
+                # 题号不升反降 → 重置了，开辟新段落
+                sections.append(current_section)
+                current_section = [p]
+                print(f"[网格推断] 检测到分段: 题号从 {last_no} 重置为 {current_no}")
+            else:
+                current_section.append(p)
+            last_no = current_no
+
+        if current_section:
+            sections.append(current_section)
+
+        print(f"[网格推断] 共分为 {len(sections)} 个段落")
+
+        # 5. 对每个段独立推断
+        final_points = []
+        total_inferred = 0
+
+        for sec_idx, sec_points in enumerate(sections):
+            print(f"[网格推断] 处理第 {sec_idx + 1} 段: {len(sec_points)} 个点")
+
+            # 以该段第一个点作为相对基准
+            base_point = sec_points[0]
+            base_no = base_point.get("no", 1)
+            base_x = base_point.get("x", 0)
+            base_y = base_point.get("y", 0)
+
+            base_row = (base_no - 1) // columns
+            base_col = (base_no - 1) % columns
+
+            # 确定该段的推断范围
+            max_no_in_sec = sec_points[-1].get("no", 1)
+
+            # 提取已有的题号
+            existing_nos = {p.get("no"): p for p in sec_points}
+
+            # 逐号遍历填补缺失
+            for target_no in range(1, max_no_in_sec + 1):
+                if target_no in existing_nos:
+                    final_points.append(existing_nos[target_no])
+                else:
+                    target_row = (target_no - 1) // columns
+                    target_col = (target_no - 1) % columns
+
+                    calc_x = int(round(base_x + (target_col - base_col) * avg_x_diff))
+                    calc_y = int(round(base_y + (target_row - base_row) * avg_y_diff))
+
+                    inferred_point = {
+                        "no": target_no,
+                        "x": calc_x,
+                        "y": calc_y,
+                        "source": "inferred_math"
+                    }
+                    final_points.append(inferred_point)
+                    total_inferred += 1
+
+            print(f"[网格推断] 第 {sec_idx + 1} 段完成: 补齐 {max_no_in_sec - len(sec_points)} 个缺失点")
+
+        # 6. 重新计算元数据（display_no, global_id等）
+        final_points_with_meta = _recalculate_point_metadata(final_points)
+
+        # 7. 保存结果
+        update_detected_question_points(final_points_with_meta)
+
+        original_count = len(current_points)
+        new_count = len(final_points_with_meta)
+
+        print(f"[网格推断] ✅ 完成！原始: {original_count} 个 → 最终: {new_count} 个 (新增推断: {total_inferred} 个)")
+
+        return {
+            "success": True,
+            "message": f"网格推断完成！原始 {original_count} 个点 → 最终 {new_count} 个点（新增推断 {total_inferred} 个）",
+            "inferred_count": total_inferred,
+            "original_count": original_count,
+            "total_count": new_count,
+            "sections": len(sections),
+            "points": [
+                {
+                    "display_no": p.get("display_no", str(p.get("no", ""))),
+                    "global_id": p.get("global_id", 0),
+                    "no": p.get("no", 0),
+                    "x": p.get("x", 0),
+                    "y": p.get("y", 0),
+                    "source": p.get("source", "unknown")
+                }
+                for p in final_points_with_meta
+            ]
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": f"网格推断失败: {e}",
+            "inferred_count": 0,
+            "total_count": 0,
+            "points": []
+        }
