@@ -38,8 +38,8 @@ def _smart_merge_paragraphs(boxes: List[dict], region_width: int) -> str:
     if not boxes:
         return ""
 
-    # 按 Y 坐标排序（行），相同行按 X 坐标排序
-    sorted_boxes = sorted(boxes, key=lambda b: (b.get("y", 0), b.get("x", 0)))
+    # 仅按 Y 坐标排序（行），行内排序在分组后单独处理
+    sorted_boxes = sorted(boxes, key=lambda b: b.get("y", 0))
 
     lines = []
     current_line = []
@@ -58,8 +58,9 @@ def _smart_merge_paragraphs(boxes: List[dict], region_width: int) -> str:
 
         # 如果 Y 坐标相差超过字高的一半，认为是新行
         if abs(y - current_y) > line_height * 0.4:
-            # 保存上一行
+            # 保存上一行（行内按 X 坐标升序排序，防止横向错乱）
             if current_line:
+                current_line.sort(key=lambda b: b.get("x", 0))
                 lines.append({
                     "text": "".join([b["text"] for b in current_line]),
                     "boxes": current_line,
@@ -73,8 +74,9 @@ def _smart_merge_paragraphs(boxes: List[dict], region_width: int) -> str:
             current_line.append(box)
             line_height = max(line_height, height)
 
-    # 保存最后一行
+    # 保存最后一行（同样按 X 坐标排序）
     if current_line:
+        current_line.sort(key=lambda b: b.get("x", 0))
         lines.append({
             "text": "".join([b["text"] for b in current_line]),
             "boxes": current_line,
@@ -112,14 +114,13 @@ def _smart_merge_paragraphs(boxes: List[dict], region_width: int) -> str:
 
             if should_merge:
                 # 判断是否需要加空格
-                # 如果前一行末尾和当前行开头都是中文，不需要空格
-                # 否则需要加空格
+                # 只有当交界处出现英文/数字时才需要加空格，中文（含标点）直接粘连
                 need_space = False
                 if prev_text and line_text:
-                    # 检查是否是中文字符
-                    prev_is_cjk = '\u4e00' <= prev_text[-1] <= '\u9fff'
-                    curr_is_cjk = '\u4e00' <= line_text[0] <= '\u9fff'
-                    if not (prev_is_cjk and curr_is_cjk):
+                    # 检查前一行末尾或当前行开头是否为英文字母或数字
+                    prev_is_alnum = bool(re.match(r'[a-zA-Z0-9]$', prev_text))
+                    curr_is_alnum = bool(re.match(r'^[a-zA-Z0-9]', line_text))
+                    if prev_is_alnum or curr_is_alnum:
                         need_space = True
 
                 if need_space:
@@ -179,6 +180,9 @@ def capture_ocr(region: Dict = None, backend_name: str = "auto") -> Dict:
         "height": rect.height()
     })
 
+    # 设置初始状态通知前端
+    _set_operation_state("single_ocr", True, 0, 1, "屏幕截图已捕获，正在进行图像预处理...", "preprocess")
+
     start_time = time.time()
 
     # 确保窗口已隐藏再截图
@@ -191,6 +195,7 @@ def capture_ocr(region: Dict = None, backend_name: str = "auto") -> Dict:
     except Exception as e:
         import traceback
         _restore_webview_window()
+        _clear_operation_state("single_ocr")
         return {
             "success": False,
             "error": f"截图失败: {e}\n{traceback.format_exc()}"
@@ -202,6 +207,8 @@ def capture_ocr(region: Dict = None, backend_name: str = "auto") -> Dict:
     try:
         # 使用带坐标的 OCR 识别
         raw_text, actual_backend, boxes = recognize_image_with_boxes(ocr_image, backend_name)
+
+        _update_operation_state(message="OCR 识别完成，正在进行文本智能合并与重组...", phase="paragraph_merge")
 
         # 使用智能合并算法处理文本（使用 ocr_image 的宽度，与 boxes 坐标一致）
         if boxes:
@@ -220,6 +227,9 @@ def capture_ocr(region: Dict = None, backend_name: str = "auto") -> Dict:
 
         elapsed = time.time() - start_time
 
+        # 清理状态
+        _clear_operation_state("single_ocr")
+
         return {
             "success": True,
             "text": text,
@@ -234,6 +244,7 @@ def capture_ocr(region: Dict = None, backend_name: str = "auto") -> Dict:
             }
         }
     except Exception as e:
+        _clear_operation_state("single_ocr")
         return {
             "success": False,
             "error": str(e)

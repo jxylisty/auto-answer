@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<!DOCTYPE html>
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -196,6 +196,7 @@
                     </div>
                     <div class="detect-actions">
                         <button class="btn btn-primary" id="btnDetectQuestions">智能识别题号坐标</button>
+                        <button class="btn btn-secondary" id="btnManualEditPoint">手动添加/编辑题号</button>
                     </div>
                     <div class="progress-section" id="detectProgress" style="display: none;">
                         <div class="progress-bar">
@@ -212,10 +213,11 @@
                                     <th>X</th>
                                     <th>Y</th>
                                     <th>来源</th>
+                                    <th>操作</th>
                                 </tr>
                             </thead>
                             <tbody id="questionPointsTableBody">
-                                <tr><td colspan="4" class="empty-text">暂无数据</td></tr>
+                                <tr><td colspan="5" class="empty-text">暂无数据</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -468,6 +470,41 @@ A B C D / ABCDA (按顺序解析)"></textarea>
                     <div class="selection-handle sw"></div>
                     <div class="selection-handle se"></div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 手动编辑题号坐标的模态框 -->
+    <div class="modal-overlay" id="pointModalOverlay" style="display: none;">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3 id="pointModalTitle">手动添加/编辑题号</h3>
+                <button class="modal-close-btn" id="btnClosePointModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="inputPointNo">题号</label>
+                    <input type="number" class="text-input" id="inputPointNo" min="1" placeholder="输入题号（如 1, 2, 3...）" />
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="inputPointX">X 坐标</label>
+                        <input type="number" class="text-input" id="inputPointX" placeholder="X 坐标" step="1" />
+                    </div>
+                    <div class="form-group">
+                        <label for="inputPointY">Y 坐标</label>
+                        <input type="number" class="text-input" id="inputPointY" placeholder="Y 坐标" step="1" />
+                    </div>
+                </div>
+                <div class="form-group">
+                    <button class="btn btn-secondary btn-block" id="btnGetMousePos">
+                        🎯 监听快捷键 (按 Home 键获取)
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btnCancelPointModal">取消</button>
+                <button class="btn btn-primary" id="btnConfirmPointModal">确认</button>
             </div>
         </div>
     </div>

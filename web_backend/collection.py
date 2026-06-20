@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import re
+import math
 import unicodedata
 from typing import Dict, List
 
@@ -53,17 +54,18 @@ def detect_question_points(backend_name: str = "auto") -> Dict:
         }
 
     try:
-        # 题号坐标识别不能用 prepare_image_for_ocr（它会缩放图片），
-        # 因为 OCR 返回的是缩放后图片内的坐标，需要对应原始截图尺寸。
-        # 直接用原图送 OCR，引擎内部会处理缩放。
-        #
-        # 双通道识别：原图 + 反色图合并结果
-        # 原因：OCR 引擎训练数据是黑字白底，遇到蓝底白字（选中状态）会漏检
-        raw_text, actual_backend, boxes = recognize_image_with_boxes(image, backend_name)
+        # 【优化1】：主动放大图像 2 倍。这对细小笔画（如 1、4、7）的识别率有质的提升
+        scale_factor = 2.0
+        from PIL import Image, ImageOps
+        work_image = image.resize(
+            (int(image.width * scale_factor), int(image.height * scale_factor)),
+            Image.Resampling.LANCZOS
+        )
 
-        # 第二遍：反色后再跑一次，抓取浅色文字（如蓝底白字的选中题号）
-        from PIL import ImageOps
-        inverted = ImageOps.invert(image.convert("RGB"))
+        # 双通道识别：放大后的原图 + 放大后的反色图
+        raw_text, actual_backend, boxes = recognize_image_with_boxes(work_image, backend_name)
+
+        inverted = ImageOps.invert(work_image.convert("RGB"))
         _, _, inv_boxes = recognize_image_with_boxes(inverted, backend_name)
         if inv_boxes:
             boxes = boxes + inv_boxes  # 合并，后续去重靠 no 字段
@@ -77,9 +79,7 @@ def detect_question_points(backend_name: str = "auto") -> Dict:
                 "count": 0
             }
 
-        number_pattern = re.compile(r'^\d+$')
         points = []
-        seen_nos = set()  # 去重：原图优先，反色图补漏
         total_boxes = len(boxes)
 
         # 区域偏移：OCR 坐标是相对于截图区域的，需要加上区域偏移才是屏幕绝对坐标
@@ -88,25 +88,64 @@ def detect_question_points(backend_name: str = "auto") -> Dict:
 
         for idx, box in enumerate(boxes, start=1):
             text = box.get("text", "").strip()
-            if number_pattern.match(text):
+
+            # 【优化2】：容错与清洗逻辑
+            # 去除可能误识别的标点符号后缀，比如 "1." "7、" "4)"
+            text = re.sub(r'[.、)）\]】]+$', '', text)
+            # 常见形近字强制纠偏
+            text = text.replace('l', '1').replace('I', '1').replace('|', '1')
+            text = text.replace('O', '0').replace('o', '0')
+            text = text.replace('Z', '2').replace('z', '2')
+            text = text.replace('q', '9')
+
+            # 放宽正则要求，只要清洗后是纯数字即可
+            if re.match(r'^\d+$', text):
                 try:
                     no = int(text)
-                    if no >= 1 and no not in seen_nos:
-                        seen_nos.add(no)
-                        # 兼容不同 OCR 后端返回的坐标字段
-                        cx = box.get("center_x", box.get("x", 0) + box.get("width", 0) / 2)
-                        cy = box.get("center_y", box.get("y", 0) + box.get("height", 0) / 2)
-                        points.append({
-                            "no": no,
-                            "x": cx + offset_x,
-                            "y": cy + offset_y,
-                            "source": "ocr"
-                        })
+                    if no >= 1:
+                        # 【优化3】：将放大图的坐标按比例还原回原图坐标
+                        box_x = box.get("x", 0) / scale_factor
+                        box_y = box.get("y", 0) / scale_factor
+                        box_w = box.get("width", 0) / scale_factor
+                        box_h = box.get("height", 0) / scale_factor
+
+                        # 获取中心点坐标，并加上窗口区域的 offset
+                        cx = box.get("center_x")
+                        if cx is not None:
+                            cx = cx / scale_factor
+                        else:
+                            cx = box_x + box_w / 2
+
+                        cy = box.get("center_y")
+                        if cy is not None:
+                            cy = cy / scale_factor
+                        else:
+                            cy = box_y + box_h / 2
+
+                        screen_cx = cx + offset_x
+                        screen_cy = cy + offset_y
+
+                        # 【核心改进1：基于空间坐标去重，而非基于数字去重】
+                        # 遍历已有点，如果距离 < 15px 则视为双通道重复点（原图+反色图识别同一位置）
+                        is_duplicate = False
+                        for existing_point in points:
+                            dist = math.hypot(screen_cx - existing_point["x"], screen_cy - existing_point["y"])
+                            if dist < 15:  # 15像素阈值
+                                is_duplicate = True
+                                break
+
+                        if not is_duplicate:
+                            points.append({
+                                "no": no,
+                                "x": screen_cx,
+                                "y": screen_cy,
+                                "source": "ocr"
+                            })
                 except Exception:
                     pass
             _update_operation_state(current=idx, total=max(total_boxes, 1), message=f"题号识别进度 {idx}/{total_boxes}", phase="filter")
 
-        # 按行排序
+        # 按行排序（保持原有空间排序逻辑）
         if points:
             y_coords = sorted(set(p["y"] for p in points))
             y_threshold = 20
@@ -141,14 +180,40 @@ def detect_question_points(backend_name: str = "auto") -> Dict:
             if inferred_points:
                 points = inferred_points
 
-        update_detected_question_points(points)
-        _update_operation_state(current=len(boxes), total=max(len(boxes), 1), message=f"题号识别完成，共 {len(points)} 个", phase="done")
+        # 【核心改进2：题号前缀智能推断（处理不同题型题号重置问题）】
+        section_idx = 1
+        last_no = 0
+        global_id = 0
 
-        # 格式化显示
+        for point in points:
+            global_id += 1
+            no = point["no"]
+
+            # 如果当前题号 <= 上一个题号，说明进入了新题型区域（如判断题从1重新开始）
+            if no <= last_no and last_no > 0:
+                section_idx += 1
+
+            # 动态生成 display_no
+            if section_idx == 1:
+                point["display_no"] = str(no)
+            else:
+                point["display_no"] = f"第{section_idx}部分-{no}"
+
+            # 添加全局唯一ID
+            point["global_id"] = global_id
+
+            last_no = no
+
+        update_detected_question_points(points)
+        _update_operation_state(current=len(boxes), total=max(len(boxes), 1), message=f"题号识别完成，共 {len(points)} 个（{section_idx}个部分）", phase="done")
+
+        # 格式化显示（保留所有新字段供前端使用）
         display_points = []
         for p in points:
             display_points.append({
-                "display_no": str(p["no"]),
+                "display_no": p.get("display_no", str(p["no"])),
+                "global_id": p.get("global_id", 0),
+                "no": p["no"],
                 "x": p["x"],
                 "y": p["y"],
                 "source": p["source"]
@@ -156,9 +221,10 @@ def detect_question_points(backend_name: str = "auto") -> Dict:
 
         return {
             "success": True,
-            "message": f"题号坐标识别完成 ({len(points)}个)",
+            "message": f"题号坐标识别完成 ({len(points)}个, {section_idx}个部分)",
             "points": display_points,
-            "count": len(points)
+            "count": len(points),
+            "sections": section_idx
         }
     except Exception as e:
         import traceback
@@ -188,17 +254,18 @@ def _detect_expected_question_count_from_boxes(boxes: list) -> int | None:
     return max(totals)
 
 
-def _infer_question_points(points: list, expected_count: int) -> list | None:
-    """推断缺失的题号坐标"""
-    if not points or expected_count <= len(points):
+def _infer_question_points(points: list, expected_count: int = None) -> list | None:
+    """基于网格数学模型的智能分段坐标推断（完美解决题号重置、中间漏题、头尾漏题）"""
+    if not points:
         return points
 
+    # 1. 确保点按空间位置（从上到下，从左到右）排序
     sorted_points = sorted(points, key=lambda item: (item.get("y", 0), item.get("x", 0)))
     if len(sorted_points) < 2:
-        return None
+        return sorted_points
 
-    # 按行分组
-    row_groups: list = []
+    # 2. 计算全局网格几何参数 (间距和列数通常是全局一致的，哪怕跨题型)
+    row_groups = []
     current_row = [sorted_points[0]]
     last_y = sorted_points[0].get("y", 0)
     for point in sorted_points[1:]:
@@ -211,44 +278,84 @@ def _infer_question_points(points: list, expected_count: int) -> list | None:
     if current_row:
         row_groups.append(current_row)
 
-    first_row = row_groups[0]
-    x_values = sorted(p.get("x", 0) for p in first_row)
-    if len(x_values) >= 2:
-        x_diffs = [x_values[i + 1] - x_values[i] for i in range(len(x_values) - 1)]
-        avg_x_diff = sum(x_diffs) / len(x_diffs)
-    else:
-        avg_x_diff = 0
+    columns = max(len(row) for row in row_groups)
+    if columns < 1:
+        columns = 1
 
-    row_ys = [sum(p.get("y", 0) for p in row) / len(row) for row in row_groups]
-    if len(row_ys) >= 2:
-        y_diffs = [row_ys[i + 1] - row_ys[i] for i in range(len(row_ys) - 1)]
-        avg_y_diff = sum(y_diffs) / len(y_diffs)
-    else:
-        avg_y_diff = 0
+    x_diffs = []
+    for row in row_groups:
+        if len(row) >= 2:
+            row_x = sorted(p.get("x", 0) for p in row)
+            x_diffs.extend([row_x[i+1] - row_x[i] for i in range(len(row_x)-1)])
+    avg_x_diff = sum(x_diffs) / len(x_diffs) if x_diffs else 0
 
-    columns = len(first_row)
-    rows_needed = (expected_count + columns - 1) // max(1, columns)
-    inferred_points = []
-    point_idx = 0
-    start_x = x_values[0]
-    start_y = row_ys[0]
+    y_diffs = []
+    if len(row_groups) >= 2:
+        row_ys = [sum(p.get("y", 0) for p in row) / len(row) for row in row_groups]
+        y_diffs = [row_ys[i+1] - row_ys[i] for i in range(len(row_ys)-1)]
+    avg_y_diff = sum(y_diffs) / len(y_diffs) if y_diffs else 0
 
-    for row in range(rows_needed):
-        for col in range(columns):
-            if point_idx < len(sorted_points):
-                inferred_points.append(sorted_points[point_idx])
+    if avg_x_diff == 0 and avg_y_diff == 0:
+        return sorted_points
+
+    # 3. 智能分段：如果识别到的数字变小，说明进入了新题型/新部分
+    sections = []
+    current_section = [sorted_points[0]]
+    last_no = sorted_points[0].get("no", 0)
+
+    for p in sorted_points[1:]:
+        current_no = p.get("no", 0)
+        if current_no <= last_no:
+            # 题号不升反降，说明题号重置了，开辟新段落
+            sections.append(current_section)
+            current_section = [p]
+        else:
+            current_section.append(p)
+        last_no = current_no
+    if current_section:
+        sections.append(current_section)
+
+    # 4. 对每个分段进行独立推断填补
+    final_points = []
+    for sec_idx, sec_points in enumerate(sections):
+        # 以该段识别到的第一个点作为"相对坐标基准点"
+        base_point = sec_points[0]
+        base_no = base_point.get("no", 1)
+        base_x = base_point.get("x", 0)
+        base_y = base_point.get("y", 0)
+
+        base_row = (base_no - 1) // columns
+        base_col = (base_no - 1) % columns
+
+        # 确定该段的推断终点
+        max_no_in_sec = sec_points[-1].get("no", 1)
+        # 如果是最后一段，且传入了全局预期总数，可以尝试向后延伸补齐
+        if sec_idx == len(sections) - 1 and expected_count and expected_count > max_no_in_sec:
+            max_no_in_sec = expected_count
+
+        # 提取该段已有的所有题号，方便快速比对
+        existing_nos = {p.get("no"): p for p in sec_points}
+
+        # 遍历 1 到 该段最大题号，如果缺失就用数学网格算出来
+        for target_no in range(1, max_no_in_sec + 1):
+            if target_no in existing_nos:
+                final_points.append(existing_nos[target_no])
             else:
-                inferred_points.append({
-                    "no": point_idx + 1,
-                    "x": int(round(start_x + col * avg_x_diff)),
-                    "y": int(round(start_y + row * avg_y_diff)),
-                    "source": "inferred",
-                })
-            point_idx += 1
-            if point_idx >= expected_count:
-                return inferred_points[:expected_count]
+                target_row = (target_no - 1) // columns
+                target_col = (target_no - 1) % columns
 
-    return inferred_points[:expected_count] if inferred_points else None
+                # 相对于 base_point 计算 X 和 Y 的偏移
+                calc_x = int(round(base_x + (target_col - base_col) * avg_x_diff))
+                calc_y = int(round(base_y + (target_row - base_row) * avg_y_diff))
+
+                final_points.append({
+                    "no": target_no,
+                    "x": calc_x,
+                    "y": calc_y,
+                    "source": "inferred_math"
+                })
+
+    return final_points
 
 
 def _run_collection_thread(options: Dict, result_queue):
@@ -295,9 +402,7 @@ def _run_collection_thread(options: Dict, result_queue):
         _hide_webview_window()
         time.sleep(0.2)
 
-        # 去重：使用题号作为唯一键，遇到重复题号时覆盖旧记录
-        seen_nos: Dict[int, int] = {}  # no -> index in _collected_records
-
+        # 【核心改进3：严格按照空间顺序（global_id）采集，不进行任何基于题号的覆盖】
         for idx, point in enumerate(points, start=1):
             if _collection_stop_flag:
                 _update_operation_state(message=f"采集已停止于 {idx - 1}/{total}", phase="stopped")
@@ -306,19 +411,10 @@ def _run_collection_thread(options: Dict, result_queue):
             no = point.get("no", idx)
             x = point.get("x", 0)
             y = point.get("y", 0)
-            _update_operation_state(current=idx - 1, total=total, message=f"采集中 {idx}/{total}，点击题号 {no}", phase="click")
+            display_no = point.get("display_no", str(no))
+            global_id = point.get("global_id", idx)
 
-            # 检查是否重复题号
-            if no in seen_nos:
-                print(f"检测到重复题号 {no}，将覆盖之前的记录")
-                # 移除旧记录
-                old_index = seen_nos[no]
-                if 0 <= old_index < len(_collected_records):
-                    _collected_records.pop(old_index)
-                    # 更新后续记录的索引
-                    for existing_no, existing_idx in list(seen_nos.items()):
-                        if existing_idx > old_index:
-                            seen_nos[existing_no] = existing_idx - 1
+            _update_operation_state(current=idx - 1, total=total, message=f"采集中 {idx}/{total}，点击题号 {display_no}", phase="click")
 
             if not test_mode:
                 pyautogui.click(x, y)
@@ -334,7 +430,9 @@ def _run_collection_thread(options: Dict, result_queue):
 
             record = {
                 "index": idx,
+                "global_id": global_id,
                 "no": no,
+                "display_no": display_no,
                 "click_x": x,
                 "click_y": y,
                 "capture_image": image.copy(),
@@ -383,8 +481,7 @@ def _run_collection_thread(options: Dict, result_queue):
                     record[f"option_{label}_click_y"] = opt.get("click_y", opt.get("screen_y", 0))
 
             _collected_records.append(record)
-            seen_nos[no] = len(_collected_records) - 1  # 记录该题号在列表中的位置
-            _update_operation_state(current=idx, total=total, message=f"采集进度 {idx}/{total}，题号 {no}", phase="done")
+            _update_operation_state(current=idx, total=total, message=f"采集进度 {idx}/{total}，题号 {display_no}", phase="done")
 
             time.sleep(interval)
 
@@ -611,3 +708,309 @@ def parse_collected_options(options: Dict = None) -> Dict:
             "success": False,
             "error": str(e)
         }
+
+
+def get_mouse_position() -> Dict:
+    """获取当前鼠标的绝对屏幕坐标"""
+    try:
+        import pyautogui
+        x, y = pyautogui.position()
+        return {
+            "success": True,
+            "x": int(x),
+            "y": int(y),
+            "message": f"鼠标位置: ({int(x)}, {int(y)})"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"获取鼠标位置失败: {e}"
+        }
+
+
+# ==================== 非阻塞全局快捷键监听 ====================
+
+_captured_hotkey_coords = None  # 全局变量：存储快捷键触发的坐标
+
+
+def start_hotkey_listener() -> Dict:
+    """
+    启动非阻塞的全局快捷键监听（Home键）
+    使用 keyboard.add_hotkey（非阻塞），不会卡死界面
+    """
+    global _captured_hotkey_coords
+
+    try:
+        import keyboard
+        import pyautogui
+
+        # 清除历史钩子
+        keyboard.unhook_all()
+
+        # 重置坐标变量
+        _captured_hotkey_coords = None
+
+        def on_hotkey():
+            """快捷键触发时的回调函数（在后台线程执行）"""
+            global _captured_hotkey_coords
+            try:
+                x, y = pyautogui.position()
+                _captured_hotkey_coords = (int(x), int(y))
+                print(f"[快捷键] 已捕获坐标: ({int(x)}, {int(y)})")
+                # 立刻注销监听，防止重复触发
+                keyboard.unhook_all()
+            except Exception as e:
+                print(f"[快捷键] 获取坐标失败: {e}")
+
+        # 使用非阻塞方法绑定快捷键（立即返回）
+        keyboard.add_hotkey('home', on_hotkey)
+
+        return {
+            "success": True,
+            "message": "快捷键监听已启动，请按 Home 键"
+        }
+    except ImportError:
+        return {
+            "success": False,
+            "error": "缺少 keyboard 库，请运行: pip install keyboard"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"启动监听失败: {e}"
+        }
+
+
+def check_hotkey_result() -> Dict:
+    """
+    检查快捷键是否已被触发（供前端轮询）
+    """
+    global _captured_hotkey_coords
+
+    if _captured_hotkey_coords is not None:
+        # 有坐标数据，取出并重置
+        x, y = _captured_hotkey_coords
+        _captured_hotkey_coords = None
+        return {
+            "success": True,
+            "x": x,
+            "y": y,
+            "message": f"已捕获坐标: ({x}, {y})"
+        }
+
+    # 还没有触发
+    return {
+        "success": False,
+        "waiting": True,
+        "message": "仍在等待按键..."
+    }
+
+
+def cancel_hotkey_listener() -> Dict:
+    """取消快捷键监听（前端取消或关闭对话框时调用）"""
+    global _captured_hotkey_coords
+
+    try:
+        import keyboard
+
+        # 注销所有钩子
+        keyboard.unhook_all()
+
+        # 重置坐标
+        _captured_hotkey_coords = None
+
+        return {
+            "success": True,
+            "message": "快捷键监听已取消"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"取消监听失败: {e}"
+        }
+
+
+def add_or_update_question_point(point_data: Dict) -> Dict:
+    """手动添加或更新题号坐标点"""
+    try:
+        no = int(point_data.get("no", 0))
+        x = float(point_data.get("x", 0))
+        y = float(point_data.get("y", 0))
+
+        if no < 1:
+            return {
+                "success": False,
+                "error": "题号必须大于等于 1"
+            }
+
+        # 获取当前列表
+        current_points = get_detected_question_points()
+
+        # 查找是否已存在该题号（基于坐标匹配，而非数字）
+        found = False
+        for i, point in enumerate(current_points):
+            dist = math.hypot(x - point["x"], y - point["y"])
+            if dist < 15:  # 同一位置的点视为更新
+                # 更新现有记录
+                point["no"] = no
+                point["x"] = x
+                point["y"] = y
+                point["source"] = "manual"
+                found = True
+                break
+
+        if not found:
+            # 添加新记录（初始不设置 display_no 和 global_id，后续统一计算）
+            current_points.append({
+                "no": no,
+                "x": x,
+                "y": y,
+                "source": "manual"
+            })
+
+        # 重新空间排序并计算 display_no / global_id
+        current_points = _recalculate_point_metadata(current_points)
+
+        # 更新全局变量
+        update_detected_question_points(current_points)
+
+        # 格式化返回（包含所有新字段）
+        display_points = []
+        for p in current_points:
+            display_points.append({
+                "display_no": p.get("display_no", str(p["no"])),
+                "global_id": p.get("global_id", 0),
+                "no": p["no"],
+                "x": p["x"],
+                "y": p["y"],
+                "source": p["source"]
+            })
+
+        action = "更新" if found else "添加"
+        return {
+            "success": True,
+            "message": f"已{action}题号 {no} 的坐标 ({int(x)}, {int(y)})",
+            "points": display_points,
+            "count": len(display_points)
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": f"操作失败: {e}"
+        }
+
+
+def delete_question_point(no: int) -> Dict:
+    """删除指定题号的坐标点"""
+    try:
+        no = int(no)
+
+        # 获取当前列表
+        current_points = get_detected_question_points()
+
+        # 查找并删除（基于 global_id 或 no 匹配）
+        original_count = len(current_points)
+        current_points = [p for p in current_points if p.get("no") != no]
+
+        if len(current_points) == original_count:
+            return {
+                "success": False,
+                "error": f"未找到题号 {no}",
+                "points": [],
+                "count": len(current_points)
+            }
+
+        # 重新计算 display_no 和 global_id
+        current_points = _recalculate_point_metadata(current_points)
+
+        # 更新全局变量
+        update_detected_question_points(current_points)
+
+        # 格式化返回（包含所有新字段）
+        display_points = []
+        for p in current_points:
+            display_points.append({
+                "display_no": p.get("display_no", str(p["no"])),
+                "global_id": p.get("global_id", 0),
+                "no": p["no"],
+                "x": p["x"],
+                "y": p["y"],
+                "source": p["source"]
+            })
+
+        return {
+            "success": True,
+            "message": f"已删除题号 {no}",
+            "points": display_points,
+            "count": len(display_points)
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": f"删除失败: {e}"
+        }
+
+
+def _recalculate_point_metadata(points: List[Dict]) -> List[Dict]:
+    """
+    重新计算题号点的元数据（空间排序 + display_no + global_id）
+    用于手动编辑后重新整理数据结构
+    """
+    if not points:
+        return points
+
+    # 1. 空间排序：先按 Y 分行，行内按 X 排序
+    y_threshold = 20
+    rows = []
+    current_row = []
+    last_y = None
+
+    for p in sorted(points, key=lambda pt: pt["y"]):
+        if last_y is None or abs(p["y"] - last_y) <= y_threshold:
+            current_row.append(p)
+            last_y = p["y"] if last_y is None else last_y
+        else:
+            if current_row:
+                rows.append(current_row)
+            current_row = [p]
+            last_y = p["y"]
+
+    if current_row:
+        rows.append(current_row)
+
+    for row in rows:
+        row.sort(key=lambda p: p["x"])
+
+    sorted_points = []
+    for row in rows:
+        sorted_points.extend(row)
+
+    # 2. 计算 section_idx、display_no 和 global_id
+    section_idx = 1
+    last_no = 0
+    global_id = 0
+
+    for point in sorted_points:
+        global_id += 1
+        no = point["no"]
+
+        # 如果当前题号 <= 上一个题号，说明进入了新题型区域
+        if no <= last_no and last_no > 0:
+            section_idx += 1
+
+        # 动态生成 display_no
+        if section_idx == 1:
+            point["display_no"] = str(no)
+        else:
+            point["display_no"] = f"第{section_idx}部分-{no}"
+
+        # 添加全局唯一ID
+        point["global_id"] = global_id
+
+        last_no = no
+
+    return sorted_points

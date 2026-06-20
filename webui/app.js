@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const AppState = {
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const AppState = {
     currentStep: 1,
     questionRegion: { selected: false },
     numberRegion: { selected: false },
@@ -195,6 +195,7 @@ function initEventListeners() {
     document.getElementById('btnSelectNumberRegion')?.addEventListener('click', selectNumberRegion);
     document.getElementById('btnSaveNumberCapture')?.addEventListener('click', saveNumberCapture);
     document.getElementById('btnDetectQuestions')?.addEventListener('click', detectQuestionPoints);
+    document.getElementById('btnManualEditPoint')?.addEventListener('click', openPointModal);
     document.getElementById('btnStartCollection')?.addEventListener('click', startCollection);
     document.getElementById('btnStopCollection')?.addEventListener('click', stopCollection);
     document.getElementById('btnParseOptions')?.addEventListener('click', parseCollectedOptions);
@@ -732,14 +733,14 @@ async function detectQuestionPoints() {
 function renderQuestionPointsTable(points) {
     const tbody = document.getElementById('questionPointsTableBody');
     if (!tbody) return;
-    
+
     tbody.innerHTML = '';
-    
+
     if (!points || points.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="empty-text">暂无数据</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-text">暂无数据</td></tr>';
         return;
     }
-    
+
     points.forEach(p => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -747,6 +748,7 @@ function renderQuestionPointsTable(points) {
             <td>${p.x}</td>
             <td>${p.y}</td>
             <td>${p.source}</td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteQuestionPoint(${p.display_no})">删除</button></td>
         `;
         tbody.appendChild(tr);
     });
@@ -1531,13 +1533,244 @@ function updateAnswerClickProgress(current, total, label = '') {
 function showToast(message, isError = false) {
     const existing = document.querySelector('.toast');
     if (existing) existing.remove();
-    
+
     const toast = document.createElement('div');
     toast.className = 'toast';
     toast.textContent = message;
     toast.style.borderColor = isError ? 'var(--color-accent-red)' : 'var(--color-hairline)';
     document.body.appendChild(toast);
-    
+
     setTimeout(() => toast.remove(), 3000);
+}
+
+// ==================== 手动编辑题号坐标功能 ====================
+
+let mouseCountdownTimer = null;
+
+/**
+ * 打开手动编辑模态框
+ */
+function openPointModal(editNo = null) {
+    const overlay = document.getElementById('pointModalOverlay');
+    const title = document.getElementById('pointModalTitle');
+    const inputNo = document.getElementById('inputPointNo');
+    const inputX = document.getElementById('inputPointX');
+    const inputY = document.getElementById('inputPointY');
+
+    // 清空或填充表单（题号始终可编辑）
+    if (editNo !== null) {
+        title.textContent = `编辑题号`;
+        inputNo.value = editNo;
+    } else {
+        title.textContent = '手动添加/编辑题号';
+        inputNo.value = '';
+    }
+    inputNo.disabled = false;  // 始终允许编辑题号
+    inputX.value = '';
+    inputY.value = '';
+
+    // 显示模态框
+    overlay.style.display = 'flex';
+
+    // 绑定事件
+    bindPointModalEvents();
+}
+
+/**
+ * 关闭手动编辑模态框
+ */
+function closePointModal() {
+    const overlay = document.getElementById('pointModalOverlay');
+    overlay.style.display = 'none';
+
+    // 取消快捷键监听（防止钩子残留）
+    cancelHotkeyListener();
+}
+
+/**
+ * 绑定模态框事件
+ */
+function bindPointModalEvents() {
+    // 关闭按钮
+    document.getElementById('btnClosePointModal').onclick = closePointModal;
+    document.getElementById('btnCancelPointModal').onclick = closePointModal;
+
+    // 确认按钮
+    document.getElementById('btnConfirmPointModal').onclick = confirmPointModal;
+
+    // 获取鼠标坐标按钮（倒计时功能）
+    document.getElementById('btnGetMousePos').onclick = startMouseCountdown;
+
+    // 点击遮罩层关闭
+    document.getElementById('pointModalOverlay').onclick = function(e) {
+        if (e.target === this) {
+            closePointModal();
+        }
+    };
+}
+
+/**
+ * 启动Home键监听获取鼠标坐标（非阻塞 + 前端轮询）
+ */
+let hotkeyPollTimer = null;  // 轮询定时器引用
+
+function startMouseCountdown() {
+    const btn = document.getElementById('btnGetMousePos');
+
+    btn.disabled = true;
+    btn.textContent = '🖱️ 请将鼠标指向题目，然后按 [Home] 键...';
+    addLog('正在启动快捷键监听...', 'info');
+
+    // 第1步：启动后端的非阻塞快捷键监听
+    window.pywebview.api.start_hotkey_listener().then(startResult => {
+        if (!startResult.success) {
+            showToast(startResult.error || '启动监听失败', true);
+            resetHotkeyButton();
+            return;
+        }
+
+        addLog('快捷键监听已启动，请按 Home 键', 'success');
+
+        // 第2步：开始轮询检测按键结果（300ms间隔）
+        hotkeyPollTimer = setInterval(async () => {
+            try {
+                const result = await window.pywebview.api.check_hotkey_result();
+
+                if (result.waiting) {
+                    // 仍在等待用户按键，继续轮询
+                    return;
+                }
+
+                // 收到结果！停止轮询
+                clearInterval(hotkeyPollTimer);
+                hotkeyPollTimer = null;
+                resetHotkeyButton();
+
+                if (result.success) {
+                    // 成功获取坐标，填入输入框
+                    document.getElementById('inputPointX').value = result.x;
+                    document.getElementById('inputPointY').value = result.y;
+                    addLog(`已捕获坐标: (${result.x}, ${result.y})`, 'success');
+                } else {
+                    showToast(result.error || '获取坐标失败', true);
+                }
+            } catch (e) {
+                // 出错时停止轮询
+                clearInterval(hotkeyPollTimer);
+                hotkeyPollTimer = null;
+                resetHotkeyButton();
+                showToast(`轮询失败: ${e}`, true);
+            }
+        }, 300);  // 每300ms检查一次
+
+    }).catch(e => {
+        showToast(`启动监听失败: ${e}`, true);
+        resetHotkeyButton();
+    });
+}
+
+/**
+ * 重置快捷键按钮状态
+ */
+function resetHotkeyButton() {
+    const btn = document.getElementById('btnGetMousePos');
+    if (btn) {
+        btn.textContent = '🎯 监听快捷键 (按 Home 键获取)';
+        btn.disabled = false;
+    }
+}
+
+/**
+ * 取消快捷键监听（关闭对话框时调用）
+ */
+async function cancelHotkeyListener() {
+    // 停止前端轮询
+    if (hotkeyPollTimer) {
+        clearInterval(hotkeyPollTimer);
+        hotkeyPollTimer = null;
+    }
+
+    // 通知后端取消监听
+    try {
+        await window.pywebview.api.cancel_hotkey_listener();
+        addLog('已取消快捷键监听', 'info');
+    } catch (e) {
+        console.warn('取消后端监听失败:', e);
+    }
+
+    // 恢复按钮状态
+    resetHotkeyButton();
+}
+
+/**
+ * 确认添加/更新题号
+ */
+async function confirmPointModal() {
+    const no = parseInt(document.getElementById('inputPointNo').value);
+    const x = parseFloat(document.getElementById('inputPointX').value);
+    const y = parseFloat(document.getElementById('inputPointY').value);
+
+    // 验证输入
+    if (!no || isNaN(no) || no < 1) {
+        showToast('请输入有效的题号（大于等于1）', true);
+        return;
+    }
+    if (isNaN(x) || isNaN(y)) {
+        showToast('请先填写 X 和 Y 坐标', true);
+        return;
+    }
+
+    try {
+        const result = await window.pywebview.api.add_or_update_question_point({
+            no: no,
+            x: x,
+            y: y
+        });
+
+        if (result.success) {
+            addLog(result.message, 'success');
+            renderQuestionPointsTable(result.points);
+
+            // 更新统计信息
+            const countEl = document.querySelector('.detect-actions')?.nextElementSibling?.querySelector('.progress-text');
+            if (countEl) {
+                // 查找包含"共 X 个"的元素并更新
+                const statsText = document.body.innerText.match(/共\s*(\d+)\s*个/);
+                if (statsText) {
+                    // 更新页面中的统计显示
+                }
+            }
+
+            closePointModal();
+            showToast(result.message);
+        } else {
+            showToast(result.error || '操作失败', true);
+        }
+    } catch (e) {
+        showToast(`操作失败: ${e}`, true);
+    }
+}
+
+/**
+ * 删除指定题号
+ */
+async function deleteQuestionPoint(no) {
+    if (!confirm(`确定要删除题号 ${no} 吗？`)) {
+        return;
+    }
+
+    try {
+        const result = await window.pywebview.api.delete_question_point(no);
+
+        if (result.success) {
+            addLog(result.message, 'success');
+            renderQuestionPointsTable(result.points);
+            showToast(result.message);
+        } else {
+            showToast(result.error || '删除失败', true);
+        }
+    } catch (e) {
+        showToast(`删除失败: ${e}`, true);
+    }
 }
 

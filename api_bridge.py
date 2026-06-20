@@ -28,6 +28,14 @@ from web_backend import (
     get_collection_status,
     stop_collection,
     parse_collected_options,
+    # 手动校准题号坐标
+    get_mouse_position,
+    # 非阻塞快捷键监听
+    start_hotkey_listener,
+    check_hotkey_result,
+    cancel_hotkey_listener,
+    add_or_update_question_point,
+    delete_question_point,
     # 执行
     parse_answers,
     build_answer_click_tasks,
